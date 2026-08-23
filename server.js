@@ -16,7 +16,6 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization", "ngrok-skip-browser-warning", "x-tenant-id", "x-company-id"],
   })
 );
-app.options("*", cors());
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Private-Network", "true");
   next();
