@@ -2297,14 +2297,14 @@ app.post("/api/billing/reset", async (req, res) => {
 
 // App Startup Initializer
 async function startServer() {
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[Server] Super Admin backend API running at http://0.0.0.0:${PORT}`);
+  });
+
   try {
     await initDB();
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`[Server] Super Admin backend API running at http://0.0.0.0:${PORT}`);
-    });
   } catch (err) {
-    console.error("[Server] Startup failed because database check crashed:", err);
-    process.exit(1);
+    console.error("[Server] Database initialization warning:", err?.message || err);
   }
 }
 
