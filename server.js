@@ -2125,7 +2125,9 @@ app.post("/api/employee/login", async (req, res) => {
         basic: 45000,
         faceRegistered: true,
         status: "active",
-        tenantId: "demo-tenant-1"
+        tenantId: "demo-tenant-1",
+        branchId: "branch-hq",
+        branchIds: ["branch-hq"]
       };
       return res.json({
         success: true,
@@ -2150,7 +2152,9 @@ app.post("/api/employee/login", async (req, res) => {
         basic: 65000,
         faceRegistered: true,
         status: "active",
-        tenantId: "demo-tenant-1"
+        tenantId: "demo-tenant-1",
+        branchId: "branch-hq",
+        branchIds: ["branch-hq"]
       };
       return res.json({
         success: true,
@@ -2175,7 +2179,9 @@ app.post("/api/employee/login", async (req, res) => {
         basic: 70000,
         faceRegistered: true,
         status: "active",
-        tenantId: "demo-tenant-1"
+        tenantId: "demo-tenant-1",
+        branchId: "branch-hq",
+        branchIds: ["branch-hq"]
       };
       return res.json({
         success: true,
@@ -2200,7 +2206,9 @@ app.post("/api/employee/login", async (req, res) => {
         basic: 150000,
         faceRegistered: true,
         status: "active",
-        tenantId: "demo-tenant-1"
+        tenantId: "demo-tenant-1",
+        branchId: "branch-hq",
+        branchIds: ["branch-hq"]
       };
       return res.json({
         success: true,
@@ -2234,9 +2242,17 @@ app.post("/api/employee/login", async (req, res) => {
       console.error("[Login] Tenant lookup error:", e.message);
     }
 
+    const employeeBranchIds = Array.isArray(matched.branchIds) && matched.branchIds.length > 0
+      ? matched.branchIds
+      : (matched.branchId ? [matched.branchId] : []);
+
     res.json({
       success: true,
-      employee: matched,
+      employee: {
+        ...matched,
+        branchId: matched.branchId || employeeBranchIds[0] || undefined,
+        branchIds: employeeBranchIds.length > 0 ? employeeBranchIds : undefined,
+      },
       tenantId: tenantIdToLookup,
       companyName: companyName
     });
