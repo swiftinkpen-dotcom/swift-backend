@@ -6,6 +6,11 @@ const { DynamoDBClient, CreateTableCommand, DescribeTableCommand } = require("@a
 const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
 const { S3Client, PutObjectCommand, HeadBucketCommand, CreateBucketCommand } = require("@aws-sdk/client-s3");
 const { RekognitionClient, IndexFacesCommand, SearchFacesByImageCommand, CreateCollectionCommand, DescribeCollectionCommand } = require("@aws-sdk/client-rekognition");
+const OpenAI = require("openai");
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 const app = express();
 app.use(
@@ -356,6 +361,7 @@ const COMPANY_TABLES = {
   docRequests: "swift_company_doc_requests",
   holidays: "swift_company_holidays",
   roster: "swift_company_roster",
+  grievances: "swift_company_grievances",
 };
 
 // Helper to check and create a composite key table (HASH + RANGE)
@@ -512,7 +518,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
   try {
     const [
       config, employees, attendance, leaves, payrolls,
-      assets, assignments, docLibrary, journeys, notices, docAssets, roles, docRequests, holidays, roster
+      assets, assignments, docLibrary, journeys, notices, docAssets, roles, docRequests, holidays, roster, grievances
     ] = await Promise.all([
       getTenantItems(COMPANY_TABLES.config, tenantId),
       getTenantItems(COMPANY_TABLES.employees, tenantId),
@@ -529,6 +535,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
       getTenantItems(COMPANY_TABLES.docRequests, tenantId),
       getTenantItems(COMPANY_TABLES.holidays, tenantId),
       getTenantItems(COMPANY_TABLES.roster, tenantId),
+      getTenantItems(COMPANY_TABLES.grievances, tenantId),
     ]);
 
     let companyConfig = config.find((c) => c.id === "config") || null;
@@ -572,9 +579,12 @@ app.get("/api/companies/initial-state", async (req, res) => {
           { id: "gen", name: "General", start: "09:00", end: "18:00", allowancePerDay: 0 }
         ],
         leaveTypes: [
-          { id: "cl", name: "Casual Leave", days: 12 },
-          { id: "sl", name: "Sick Leave", days: 12 },
-          { id: "el", name: "Earned Leave", days: 15 }
+          { id: "cl", name: "Casual Leave", days: 12, paid: true },
+          { id: "sl", name: "Sick Leave", days: 12, paid: true },
+          { id: "el", name: "Earned Leave", days: 15, paid: true }
+        ],
+        permissionTypes: [
+          { id: "perm-gen", name: "Standard Permission", maxHours: 2, period: "month", maxRequestsPerMonth: 2, paid: true }
         ],
         attendanceDefaults: [
           {
@@ -592,7 +602,30 @@ app.get("/api/companies/initial-state", async (req, res) => {
           }
         ]
       };
+      companyConfig.grievanceTypes = [
+        { id: "grv-1", name: "Attendance Related", description: "Issues related to attendance, leaves", active: true },
+        { id: "grv-2", name: "Leave Permission", description: "Request for leave approval", active: true },
+        { id: "grv-3", name: "Salary / Payroll", description: "Salary, payroll and payment issues", active: true },
+        { id: "grv-4", name: "Manager Behavior", description: "Manager behavior or attitude issues", active: true },
+        { id: "grv-5", name: "Workplace Issues", description: "Work environment or facility issues", active: true },
+        { id: "grv-6", name: "Policy Violation", description: "Violations of company policies", active: true },
+        { id: "grv-7", name: "Benefits & Claims", description: "Insurance, reimbursement issues", active: true },
+        { id: "grv-8", name: "Others", description: "Any other grievance not listed above", active: true },
+      ];
       await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.config, Item: companyConfig }));
+    }
+
+    if (companyConfig && (!companyConfig.grievanceTypes || companyConfig.grievanceTypes.length === 0)) {
+      companyConfig.grievanceTypes = [
+        { id: "grv-1", name: "Attendance Related", description: "Issues related to attendance, leaves", active: true },
+        { id: "grv-2", name: "Leave Permission", description: "Request for leave approval", active: true },
+        { id: "grv-3", name: "Salary / Payroll", description: "Salary, payroll and payment issues", active: true },
+        { id: "grv-4", name: "Manager Behavior", description: "Manager behavior or attitude issues", active: true },
+        { id: "grv-5", name: "Workplace Issues", description: "Work environment or facility issues", active: true },
+        { id: "grv-6", name: "Policy Violation", description: "Violations of company policies", active: true },
+        { id: "grv-7", name: "Benefits & Claims", description: "Insurance, reimbursement issues", active: true },
+        { id: "grv-8", name: "Others", description: "Any other grievance not listed above", active: true },
+      ];
     }
 
     let tenantRoles = roles;
@@ -637,6 +670,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
       docRequests,
       holidays: tenantHolidays,
       roster: roster || [],
+      grievances: grievances || [],
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -803,7 +837,7 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
       [{ label: "EMPLOYEE NAME", val: employee?.name || "Employee" }, { label: "EMPLOYEE CODE", val: employee?.empCode || "SW001" }],
       [{ label: "DESIGNATION", val: employee?.designation || "Software Engineer" }, { label: "DEPARTMENT", val: employee?.department || "Engineering" }],
       [{ label: "DATE OF JOINING", val: employee?.joiningDate || employee?.doj || "Jan 15, 2024" }, { label: "PAN NUMBER", val: employee?.panNumber || employee?.pan || "ABCDE1234F" }],
-      [{ label: "BANK ACCOUNT", val: employee?.bankAccount || "Registered Salary A/C" }, { label: "BANK IFSC", val: employee?.bankIfsc || "HDFC0001234" }],
+      [{ label: "PF UAN NO", val: employee?.uan || "—" }, { label: "BANK ACCOUNT", val: employee?.bankAccount || "Registered Salary A/C" }],
       [{ label: "WORKING DAYS", val: `${company.workingDaysPerMonth || 26} Days` }, { label: "PRESENT DAYS", val: `${daysWorked} Days` }],
     ];
 
@@ -1165,7 +1199,7 @@ app.post("/api/documents/accept", async (req, res) => {
   }
 });
 
-// 1f. Approve / Reject Leave or Permission Request
+// 1f. Approve / Reject / Forward / Close Leave or Permission Request
 app.post("/api/leaves/act", async (req, res) => {
   const { tenantId, leaveId, action, comment, actorId, actorName, actorRole } = req.body;
   if (!tenantId || !leaveId || !action) {
@@ -1180,24 +1214,131 @@ app.post("/api/leaves/act", async (req, res) => {
     const leaveReq = leaveRes.Item;
     if (!leaveReq) return res.status(404).json({ error: "Leave request not found" });
 
-    const normalizedAction = action === "approve" || action === "Approved" ? "Approved" : "Rejected";
+    const now = new Date().toISOString();
+    let updatedLeaveReq = { ...leaveReq };
 
-    const updatedLeaveReq = {
-      ...leaveReq,
-      status: normalizedAction,
-      actedBy: actorName || "Approver",
-      actedById: actorId,
-      actedByRole: actorRole || "Manager",
-      approverComment: comment || "",
-      actedAt: new Date().toISOString(),
-    };
+    const currentLvl = leaveReq.currentLevel || 1;
+    const totalLvls = leaveReq.totalLevels || leaveReq.approvalSteps?.length || 3;
+
+    if (action === "reject" || action === "Rejected") {
+      const updatedSteps = (leaveReq.approvalSteps || []).map((step) => {
+        if (step.level === currentLvl) {
+          return {
+            ...step,
+            status: "Rejected",
+            approverName: actorName || "Approver",
+            comment: comment || `Rejected by ${actorRole || "Manager"}`,
+            actionAt: now,
+          };
+        }
+        return step;
+      });
+
+      updatedLeaveReq = {
+        ...leaveReq,
+        status: "Rejected",
+        rejectedReason: comment || `Rejected by ${actorRole || "Manager"} (${actorName || "Approver"})`,
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+      };
+    } else if (action === "approve_close") {
+      // Immediately approve and complete all stages
+      const updatedSteps = (leaveReq.approvalSteps || []).map((step) => {
+        if (step.level <= currentLvl) {
+          return {
+            ...step,
+            status: "Approved",
+            approverName: step.level === currentLvl ? (actorName || "Approver") : step.approverName,
+            comment: step.level === currentLvl ? (comment || "Approved & Closed") : step.comment,
+            actionAt: step.level === currentLvl ? now : step.actionAt,
+          };
+        }
+        return {
+          ...step,
+          status: "Approved",
+          approverName: `Auto-approved by ${actorName || "Manager"}`,
+          comment: "Closed by earlier stage authority",
+          actionAt: now,
+        };
+      });
+
+      updatedLeaveReq = {
+        ...leaveReq,
+        status: "Approved",
+        currentLevel: totalLvls,
+        approvedBy: actorName || "Approver",
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "Approved & Closed directly",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+      };
+    } else if (action === "escalate") {
+      const isFinal = currentLvl >= totalLvls;
+      const nextLevel = isFinal ? currentLvl : currentLvl + 1;
+
+      const updatedSteps = (leaveReq.approvalSteps || []).map((step) => {
+        if (step.level === currentLvl) {
+          return {
+            ...step,
+            status: "Pending",
+            comment: `Escalated to Level ${nextLevel}: ${comment || "No action within threshold"}`,
+            actionAt: now,
+          };
+        }
+        return step;
+      });
+
+      updatedLeaveReq = {
+        ...leaveReq,
+        currentLevel: nextLevel,
+        approverComment: `Escalated to Level ${nextLevel}`,
+        approvalSteps: updatedSteps,
+      };
+    } else {
+      // action === "approve_forward" or "approve"
+      const isFinalLevel = currentLvl >= totalLvls;
+      const nextLevel = isFinalLevel ? currentLvl : currentLvl + 1;
+      const finalStatus = isFinalLevel ? "Approved" : "Pending";
+
+      const updatedSteps = (leaveReq.approvalSteps || []).map((step) => {
+        if (step.level === currentLvl) {
+          return {
+            ...step,
+            status: "Approved",
+            approverName: actorName || "Approver",
+            comment: comment || "Approved & Forwarded",
+            actionAt: now,
+          };
+        }
+        return step;
+      });
+
+      updatedLeaveReq = {
+        ...leaveReq,
+        status: finalStatus,
+        currentLevel: nextLevel,
+        approvedBy: isFinalLevel ? (actorName || "Approver") : leaveReq.approvedBy,
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+      };
+    }
 
     await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.leaves, Item: updatedLeaveReq }));
 
     // Generate real-time notice for the employee
     await createCompanyNotice(tenantId, {
-      title: normalizedAction === "Approved" ? "Leave / Permission Request Approved" : "Leave / Permission Request Rejected",
-      description: `Your ${leaveReq.type} request (${leaveReq.startDate || ""}) has been ${normalizedAction.toLowerCase()} by ${actorName || "Manager"}${comment ? ": " + comment : "."}`,
+      title: updatedLeaveReq.status === "Approved" ? "Leave / Permission Request Approved" : updatedLeaveReq.status === "Rejected" ? "Leave / Permission Request Rejected" : "Leave Approval Progressed",
+      description: `Your ${leaveReq.type} request (${leaveReq.startDate || ""}) status is now ${updatedLeaveReq.status} by ${actorName || "Manager"}${comment ? ": " + comment : "."}`,
       category: "leave",
       targetEmployeeId: leaveReq.employeeId,
     });
@@ -1208,19 +1349,155 @@ app.post("/api/leaves/act", async (req, res) => {
   }
 });
 
+// 1g. Approve / Reject / Forward / Close Attendance Requests
+app.post("/api/attendance-requests/act", async (req, res) => {
+  const { tenantId, requestId, action, comment, actorId, actorName, actorRole } = req.body;
+  if (!tenantId || !requestId || !action) {
+    return res.status(400).json({ error: "Missing required fields: tenantId, requestId, action" });
+  }
+
+  try {
+    const attRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.attendance,
+      Key: { tenantId, id: requestId }
+    }));
+    const attReq = attRes.Item;
+    if (!attReq) return res.status(404).json({ error: "Attendance request not found" });
+
+    const now = new Date().toISOString();
+    let updatedAttReq = { ...attReq };
+
+    const currentLvl = attReq.currentLevel || 1;
+    const totalLvls = attReq.totalLevels || attReq.approvalSteps?.length || 3;
+
+    if (action === "reject" || action === "Rejected") {
+      const updatedSteps = (attReq.approvalSteps || []).map((step) => {
+        if (step.level === currentLvl) {
+          return {
+            ...step,
+            status: "Rejected",
+            approverName: actorName || "Approver",
+            comment: comment || `Rejected by ${actorRole || "Manager"}`,
+            actionAt: now,
+          };
+        }
+        return step;
+      });
+
+      updatedAttReq = {
+        ...attReq,
+        status: "Rejected",
+        rejectedReason: comment || `Rejected by ${actorRole || "Manager"}`,
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+      };
+    } else if (action === "approve_close") {
+      const updatedSteps = (attReq.approvalSteps || []).map((step) => {
+        if (step.level <= currentLvl) {
+          return {
+            ...step,
+            status: "Approved",
+            approverName: step.level === currentLvl ? (actorName || "Approver") : step.approverName,
+            comment: step.level === currentLvl ? (comment || "Approved & Closed") : step.comment,
+            actionAt: step.level === currentLvl ? now : step.actionAt,
+          };
+        }
+        return {
+          ...step,
+          status: "Approved",
+          approverName: `Auto-approved by ${actorName || "Manager"}`,
+          comment: "Closed by earlier stage authority",
+          actionAt: now,
+        };
+      });
+
+      updatedAttReq = {
+        ...attReq,
+        status: "Approved",
+        currentLevel: totalLvls,
+        approvedBy: actorName || "Approver",
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "Approved & Closed directly",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+      };
+    } else {
+      const isFinalLevel = currentLvl >= totalLvls;
+      const nextLevel = isFinalLevel ? currentLvl : currentLvl + 1;
+      const finalStatus = isFinalLevel ? "Approved" : "Pending";
+
+      const updatedSteps = (attReq.approvalSteps || []).map((step) => {
+        if (step.level === currentLvl) {
+          return {
+            ...step,
+            status: "Approved",
+            approverName: actorName || "Approver",
+            comment: comment || "Approved & Forwarded",
+            actionAt: now,
+          };
+        }
+        return step;
+      });
+
+      updatedAttReq = {
+        ...attReq,
+        status: finalStatus,
+        currentLevel: nextLevel,
+        approvedBy: isFinalLevel ? (actorName || "Approver") : attReq.approvedBy,
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+      };
+    }
+
+    await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.attendance, Item: updatedAttReq }));
+
+    // Real-time notice
+    await createCompanyNotice(tenantId, {
+      title: updatedAttReq.status === "Approved" ? "Attendance Request Approved" : updatedAttReq.status === "Rejected" ? "Attendance Request Rejected" : "Attendance Approval Progressed",
+      description: `Your attendance request status is now ${updatedAttReq.status} by ${actorName || "Manager"}${comment ? ": " + comment : "."}`,
+      category: "attendance",
+      targetEmployeeId: attReq.employeeId,
+    });
+
+    res.json({ success: true, item: updatedAttReq });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 2. Generic Mutation Route
 app.post("/api/companies/mutate", async (req, res) => {
   const { table, item } = req.body;
   if (!table || !item || !item.tenantId || !item.id) {
+    console.error(`[Mutate] REJECTED: missing params. table=${table}, id=${item?.id}, tenantId=${item?.tenantId}`);
     return res.status(400).json({ error: "Missing required params: table, item, tenantId, id" });
   }
   const tableName = COMPANY_TABLES[table];
   if (!tableName) return res.status(404).json({ error: "Table not found" });
 
+  // Debug log for attendance mutations
+  if (table === 'attendance') {
+    console.log(`[Mutate] attendance => id=${item.id}, empId=${item.employeeId}, date=${item.date}, clockIn=${item.clockIn || item.checkIn}, clockOut=${item.clockOut || item.checkOut}`);
+  }
+
   try {
     await ddb.send(new PutCommand({ TableName: tableName, Item: item }));
+    if (table === 'attendance') {
+      console.log(`[Mutate] attendance SAVED successfully: ${item.id}`);
+    }
     res.json({ success: true, item });
   } catch (error) {
+    console.error(`[Mutate] DynamoDB ERROR for ${table}/${item.id}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1311,7 +1588,38 @@ app.post("/api/companies/face-register", async (req, res) => {
       await rekognition.send(indexCommand);
     }
 
-    res.json({ success: true, url: s3Url });
+    // Automatically update the employee profile in DynamoDB so changes reflect across Admin & Mobile immediately
+    try {
+      const getRes = await ddb.send(new GetCommand({
+        TableName: COMPANY_TABLES.employees,
+        Key: { tenantId, id: employeeId }
+      }));
+      let emp = getRes.Item;
+      if (!emp) {
+        const scanRes = await ddb.send(new ScanCommand({
+          TableName: COMPANY_TABLES.employees,
+          FilterExpression: "tenantId = :tid AND (empCode = :eid OR code = :eid)",
+          ExpressionAttributeValues: { ":tid": tenantId, ":eid": employeeId }
+        }));
+        if (scanRes.Items && scanRes.Items.length > 0) {
+          emp = scanRes.Items[0];
+        }
+      }
+      if (emp) {
+        emp.photoDataUrl = s3Url;
+        emp.faceRegistered = true;
+        emp.updatedAt = new Date().toISOString();
+        await ddb.send(new PutCommand({
+          TableName: COMPANY_TABLES.employees,
+          Item: emp
+        }));
+        console.log(`[FaceRegister] Updated employee record in DynamoDB for ${employeeId}: faceRegistered=true, photoDataUrl=${s3Url}`);
+      }
+    } catch (dbErr) {
+      console.warn(`[FaceRegister] DynamoDB update note:`, dbErr.message);
+    }
+
+    res.json({ success: true, url: s3Url, faceRegistered: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1324,9 +1632,18 @@ app.post("/api/companies/face-verify", async (req, res) => {
     return res.status(400).json({ error: "Missing tenantId or photoDataUrl" });
   }
 
+  // Upload punch photo to S3 so it can be viewed across all admin panels
+  let s3Url = null;
+  try {
+    const key = `${tenantId}/attendance_scans/${employeeId || 'emp'}_${Date.now()}.jpg`;
+    s3Url = await uploadToS3(key, photoDataUrl);
+  } catch (err) {
+    console.warn("[FaceVerify] S3 upload warning:", err.message);
+  }
+
   if (!process.env.AWS_ACCESS_KEY_ID || !photoDataUrl.startsWith("data:")) {
     // Demo/offline fallback: verify for requested employeeId or fallback to demo-emp-1
-    return res.json({ success: true, employeeId: employeeId || "demo-emp-1", similarity: 100 });
+    return res.json({ success: true, employeeId: employeeId || "demo-emp-1", similarity: 100, url: s3Url || photoDataUrl });
   }
 
   try {
@@ -1360,6 +1677,7 @@ app.post("/api/companies/face-verify", async (req, res) => {
         success: true,
         employeeId: matchedEmpId,
         similarity: matches[0].Similarity,
+        url: s3Url,
       });
     } else {
       res.json({ success: false, reason: "No registered matching face found in Rekognition collection" });
@@ -2307,6 +2625,263 @@ app.post("/api/billing/reset", async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// Nodemailer Welcome Email Service
+// ==========================================
+const nodemailer = require("nodemailer");
+
+const emailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
+  port: parseInt(process.env.SMTP_PORT || "465", 10),
+  secure: (process.env.SMTP_PORT || "465") === "465",
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+async function sendWelcomeEmail({ to, employeeName, empCode, password, companyName = "SwiftHR" }) {
+  if (!to || !to.includes("@")) {
+    console.warn(`[WelcomeEmail] Skipped: No valid email address provided for ${employeeName || empCode}`);
+    return { skipped: true, reason: "No email provided" };
+  }
+
+  const safeEmpName = employeeName || "Valued Employee";
+  const safeEmpCode = empCode || "N/A";
+  const safePassword = password || "N/A";
+  const safeCompName = companyName || "SwiftHR";
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Welcome to ${safeCompName}</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; color: #1e293b; margin: 0; padding: 24px 12px; }
+        .container { max-width: 580px; margin: 0 auto; background: #ffffff; border-radius: 18px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05); }
+        .header { background: linear-gradient(135deg, #2563eb, #7c3aed); padding: 36px 28px; text-align: center; color: #ffffff; }
+        .header h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
+        .header p { margin: 8px 0 0; opacity: 0.92; font-size: 14px; font-weight: 500; }
+        .content { padding: 32px 28px; }
+        .greeting { font-size: 18px; font-weight: 700; margin-bottom: 14px; color: #0f172a; }
+        .lead { font-size: 14px; line-height: 1.6; color: #475569; margin-bottom: 24px; }
+        .credentials-card { background: #f8fafc; border-radius: 14px; padding: 20px; border: 1px solid #e2e8f0; margin-bottom: 24px; }
+        .credentials-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; color: #2563eb; margin-bottom: 14px; display: flex; align-items: center; gap: 6px; }
+        .cred-table { width: 100%; border-collapse: collapse; }
+        .cred-table td { padding: 8px 0; border-bottom: 1px solid #edf2f7; }
+        .cred-table tr:last-child td { border-bottom: none; }
+        .cred-label { font-size: 13px; color: #64748b; font-weight: 600; width: 45%; }
+        .cred-value { font-size: 14px; font-weight: 700; color: #0f172a; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .password-badge { background: #e0e7ff; color: #3730a3; padding: 4px 10px; border-radius: 6px; font-weight: 800; letter-spacing: 0.5px; display: inline-block; }
+        .code-badge { background: #dbeafe; color: #1e40af; padding: 4px 10px; border-radius: 6px; font-weight: 800; display: inline-block; }
+        .step-box { background: #f0fdf4; border-left: 4px solid #16a34a; border-radius: 10px; padding: 16px 18px; margin-bottom: 24px; }
+        .step-box-title { font-size: 13px; font-weight: 800; color: #15803d; margin-bottom: 6px; }
+        .step-box p { margin: 0; font-size: 13px; color: #166534; line-height: 1.6; }
+        .step-box ol { margin: 8px 0 0 0; padding-left: 18px; font-size: 13px; color: #166534; line-height: 1.6; }
+        .footer { padding: 20px 28px; background: #f8fafc; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; line-height: 1.5; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Welcome to ${safeCompName}</h1>
+          <p>Your Employee Account & Mobile Access Credentials</p>
+        </div>
+        <div class="content">
+          <div class="greeting">Hello ${safeEmpName},</div>
+          <p class="lead">
+            Welcome aboard! Your employee profile has been registered in the <strong>${safeCompName}</strong> organization. Below are your auto-generated credentials to access the <strong>SwiftHR</strong> mobile application.
+          </p>
+
+          <div class="credentials-card">
+            <div class="credentials-title">🔐 Login Credentials</div>
+            <table class="cred-table">
+              <tr>
+                <td class="cred-label">Employee Code:</td>
+                <td class="cred-value"><span class="code-badge">${safeEmpCode}</span></td>
+              </tr>
+              <tr>
+                <td class="cred-label">Work / Login Email:</td>
+                <td class="cred-value" style="font-family: inherit; font-size: 13px; color: #334155;">${to}</td>
+              </tr>
+              <tr>
+                <td class="cred-label">Auto-Generated Password:</td>
+                <td class="cred-value"><span class="password-badge">${safePassword}</span></td>
+              </tr>
+            </table>
+          </div>
+
+          <div class="step-box">
+            <div class="step-box-title">📱 Next Steps: Mobile App & Face Registration</div>
+            <p>You can now clock-in, view attendance, apply leaves, and track requests right from your phone:</p>
+            <ol>
+              <li>Open the <strong>SwiftHR</strong> mobile application.</li>
+              <li>Log in with your <strong>Employee Code</strong> (<code>${safeEmpCode}</code>) and the auto-generated password above.</li>
+              <li><strong>Face Registration:</strong> On your first login, the app will prompt you to capture and register your face for fast AI facial recognition check-in & check-out.</li>
+            </ol>
+          </div>
+
+          <p style="font-size: 13px; color: #64748b; margin-top: 20px; line-height: 1.5;">
+            Please keep your password secure. If you have questions or trouble accessing your account, please contact your HR administrator.
+          </p>
+        </div>
+        <div class="footer">
+          &copy; ${new Date().getFullYear()} ${safeCompName} · Powered by SwiftHR Automated HRMS
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const mailOptions = {
+    from: `"SwiftHR Support" <${process.env.SMTP_USER || "support.swifthr@gmail.com"}>`,
+    to,
+    subject: `🎉 Welcome to ${safeCompName} — Your Employee Credentials (${safeEmpCode})`,
+    text: `Hello ${safeEmpName},\n\nWelcome to ${safeCompName}! Your employee account has been created.\n\nEmployee Code: ${safeEmpCode}\nPassword: ${safePassword}\nLogin Email: ${to}\n\nPlease download and open the SwiftHR Mobile App. On your first login, you will register your face for AI attendance check-ins.\n\nBest regards,\n${safeCompName} HR Team`,
+    html,
+  };
+
+  try {
+    const info = await emailTransporter.sendMail(mailOptions);
+    console.log(`[WelcomeEmail] Sent successfully to ${to} (${safeEmpCode}): ${info.messageId}`);
+    return { success: true, messageId: info.messageId };
+  } catch (err) {
+    console.error(`[WelcomeEmail] Failed to send email to ${to}:`, err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+// Single Welcome Email Route
+app.post("/api/employees/send-welcome-email", async (req, res) => {
+  const { to, employeeName, empCode, password, companyName } = req.body;
+  if (!to || !empCode) {
+    return res.status(400).json({ error: "Missing required fields: to, empCode" });
+  }
+
+  const result = await sendWelcomeEmail({ to, employeeName, empCode, password, companyName });
+  res.json(result);
+});
+
+// Bulk Welcome Emails Route
+app.post("/api/employees/bulk-welcome-emails", async (req, res) => {
+  const { employees, companyName } = req.body;
+  if (!employees || !Array.isArray(employees)) {
+    return res.status(400).json({ error: "Missing employees array" });
+  }
+
+  const results = [];
+  for (const emp of employees) {
+    if (emp.email || emp.workEmail || emp.to) {
+      const emailTarget = emp.email || emp.workEmail || emp.to;
+      const resItem = await sendWelcomeEmail({
+        to: emailTarget,
+        employeeName: emp.name || emp.employeeName || emp.fullName,
+        empCode: emp.empCode || emp.code,
+        password: emp.password,
+        companyName,
+      });
+      results.push({ empCode: emp.empCode, to: emailTarget, ...resItem });
+    }
+  }
+
+  res.json({ success: true, count: results.length, results });
+});
+
+// ==========================================
+// SWIFT AI Chatbot API (Powered by OpenAI ChatGPT)
+// ==========================================
+app.post("/api/ai/chat", async (req, res) => {
+  try {
+    const { messages = [], context = {} } = req.body;
+
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: "OpenAI API Key is not configured on the backend server.",
+        reply: "Sorry, the AI service is currently not configured by your administrator.",
+      });
+    }
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ success: false, error: "Messages array is required." });
+    }
+
+    // Format employee and company context for the AI prompt
+    const companyName = context.companyName || "Swift HRMS";
+    const employeeName = context.employeeName || "Employee";
+    const role = context.role || context.designation || "Team Member";
+    const department = context.department || "General";
+    const empCode = context.empCode || "N/A";
+    const remainingCL = context.remainingCL ?? "N/A";
+    const remainingSL = context.remainingSL ?? "N/A";
+    const remainingPL = context.remainingPL ?? "N/A";
+    const upcomingHolidays = context.upcomingHolidays || [];
+    const holidaysSummary = upcomingHolidays.length > 0
+      ? upcomingHolidays.slice(0, 5).map((h) => `${h.name} on ${h.date} (${h.type || "Public Holiday"})`).join(", ")
+      : "No upcoming holidays recorded in the system.";
+
+    const systemPrompt = `You are "SWIFT AI" — an intelligent, empathetic, and professional HR & Operations Assistant for ${companyName}.
+You are interacting with an employee named "${employeeName}" (Employee Code: ${empCode}, Designation: ${role}, Department: ${department}).
+
+Here is the current live employee & company context:
+- Organization: ${companyName}
+- Employee Name: ${employeeName}
+- Employee Code: ${empCode}
+- Designation / Department: ${role} / ${department}
+- Casual Leaves (CL) Left: ${remainingCL}
+- Sick Leaves (SL) Left: ${remainingSL}
+- Paid Leaves (PL) Left: ${remainingPL}
+- Upcoming Holidays: ${holidaysSummary}
+- Standard Payroll Schedule: Salary credited on the 1st of every month via direct bank transfer.
+- Working Standard: 9 Hours / day (including 1-hour lunch break).
+
+Your Responsibilities & Tone:
+1. Provide quick, accurate, friendly, and structured answers regarding company policies, leave entitlements, payroll schedules, attendance regularization, and HR requests.
+2. If the employee asks you to draft a leave application, resignation letter, expense claim explanation, or email to their manager, generate a polished, professional, and ready-to-use template with their name and details pre-filled.
+3. If they ask about remaining leaves or upcoming holidays, reference the real live context data provided above.
+4. Keep replies concise, readable, and well-formatted using clear paragraphs, bullet points, and appropriate emojis (🌴 for leaves, 💰 for salary, 📅 for holidays, ⏱️ for attendance).
+5. If an inquiry requires confidential management intervention (e.g. salary dispute, internal grievance investigation), politely guide them to contact their HR / reporting manager or use the Grievance tab in the app.`;
+
+    // Prepare OpenAI formatted messages
+    // Cap recent history to last 10 messages to keep latency low and token efficient
+    const recentMessages = messages.slice(-10).map((m) => ({
+      role: m.sender === "user" || m.role === "user" ? "user" : "assistant",
+      content: String(m.text || m.content || ""),
+    }));
+
+    const fullMessages = [
+      { role: "system", content: systemPrompt },
+      ...recentMessages,
+    ];
+
+    console.log(`[SWIFT AI] Incoming chat query from ${employeeName} (${empCode}). Messages count: ${fullMessages.length}`);
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: fullMessages,
+      temperature: 0.7,
+      max_tokens: 800,
+    });
+
+    const reply = completion.choices?.[0]?.message?.content || "I'm sorry, I couldn't generate a response at this moment. Please try again.";
+
+    return res.json({
+      success: true,
+      reply,
+      usage: completion.usage,
+    });
+  } catch (err) {
+    console.error("[SWIFT AI] Error communicating with OpenAI:", err?.message || err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || "Failed to generate AI response",
+      reply: "I encountered a momentary issue connecting to the AI brain. Please try asking again in a few seconds!",
+    });
   }
 });
 
