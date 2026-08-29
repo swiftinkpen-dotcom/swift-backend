@@ -362,6 +362,7 @@ const COMPANY_TABLES = {
   holidays: "swift_company_holidays",
   roster: "swift_company_roster",
   grievances: "swift_company_grievances",
+  requests: "swift_company_requests",
 };
 
 // Helper to check and create a composite key table (HASH + RANGE)
@@ -518,7 +519,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
   try {
     const [
       config, employees, attendance, leaves, payrolls,
-      assets, assignments, docLibrary, journeys, notices, docAssets, roles, docRequests, holidays, roster, grievances
+      assets, assignments, docLibrary, journeys, notices, docAssets, roles, docRequests, holidays, roster, grievances, requests
     ] = await Promise.all([
       getTenantItems(COMPANY_TABLES.config, tenantId),
       getTenantItems(COMPANY_TABLES.employees, tenantId),
@@ -536,6 +537,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
       getTenantItems(COMPANY_TABLES.holidays, tenantId),
       getTenantItems(COMPANY_TABLES.roster, tenantId),
       getTenantItems(COMPANY_TABLES.grievances, tenantId),
+      getTenantItems(COMPANY_TABLES.requests, tenantId),
     ]);
 
     let companyConfig = config.find((c) => c.id === "config") || null;
@@ -603,29 +605,153 @@ app.get("/api/companies/initial-state", async (req, res) => {
         ]
       };
       companyConfig.grievanceTypes = [
-        { id: "grv-1", name: "Attendance Related", description: "Issues related to attendance, leaves", active: true },
-        { id: "grv-2", name: "Leave Permission", description: "Request for leave approval", active: true },
-        { id: "grv-3", name: "Salary / Payroll", description: "Salary, payroll and payment issues", active: true },
-        { id: "grv-4", name: "Manager Behavior", description: "Manager behavior or attitude issues", active: true },
-        { id: "grv-5", name: "Workplace Issues", description: "Work environment or facility issues", active: true },
-        { id: "grv-6", name: "Policy Violation", description: "Violations of company policies", active: true },
-        { id: "grv-7", name: "Benefits & Claims", description: "Insurance, reimbursement issues", active: true },
-        { id: "grv-8", name: "Others", description: "Any other grievance not listed above", active: true },
+        { id: "grv-missing-punch", name: "Missing Punch (Check-in / Check-out)", description: "Attendance correction ticket when clock-in or out punch was missed.", active: true },
+        { id: "grv-leave-not-approved", name: "Leave Not Approved", description: "Grievance ticket for delayed or disputed leave requests.", active: true },
+        { id: "grv-payroll-salary", name: "Payroll & Salary Issues", description: "Disputes or corrections in salary computation, deductions, or allowances.", active: true },
+        { id: "grv-workplace-behavior", name: "Workplace / Behavior", description: "Workplace environment, harassment prevention, or peer conduct issues.", active: true },
+        { id: "grv-policy-compliance", name: "Policy / Compliance", description: "Company policy inquiries, regulatory questions, or compliance appeals.", active: true },
+        { id: "grv-it-access", name: "IT / System Access", description: "System credentials, software licenses, or hardware access tickets.", active: true },
+        { id: "grv-others", name: "Others", description: "General employee grievances and feedback requests.", active: true },
       ];
       await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.config, Item: companyConfig }));
     }
 
     if (companyConfig && (!companyConfig.grievanceTypes || companyConfig.grievanceTypes.length === 0)) {
-      companyConfig.grievanceTypes = [
-        { id: "grv-1", name: "Attendance Related", description: "Issues related to attendance, leaves", active: true },
-        { id: "grv-2", name: "Leave Permission", description: "Request for leave approval", active: true },
-        { id: "grv-3", name: "Salary / Payroll", description: "Salary, payroll and payment issues", active: true },
-        { id: "grv-4", name: "Manager Behavior", description: "Manager behavior or attitude issues", active: true },
-        { id: "grv-5", name: "Workplace Issues", description: "Work environment or facility issues", active: true },
-        { id: "grv-6", name: "Policy Violation", description: "Violations of company policies", active: true },
-        { id: "grv-7", name: "Benefits & Claims", description: "Insurance, reimbursement issues", active: true },
-        { id: "grv-8", name: "Others", description: "Any other grievance not listed above", active: true },
-      ];
+      if (companyConfig.approvalWorkflows?.grievance && companyConfig.approvalWorkflows.grievance.length > 0) {
+        companyConfig.grievanceTypes = companyConfig.approvalWorkflows.grievance.map((g) => ({
+          id: g.id,
+          name: g.name,
+          description: g.description,
+          active: g.active !== false,
+        }));
+      } else {
+        companyConfig.grievanceTypes = [
+          { id: "grv-missing-punch", name: "Missing Punch (Check-in / Check-out)", description: "Attendance correction ticket when clock-in or out punch was missed.", active: true },
+          { id: "grv-leave-not-approved", name: "Leave Not Approved", description: "Grievance ticket for delayed or disputed leave requests.", active: true },
+          { id: "grv-payroll-salary", name: "Payroll & Salary Issues", description: "Disputes or corrections in salary computation, deductions, or allowances.", active: true },
+          { id: "grv-workplace-behavior", name: "Workplace / Behavior", description: "Workplace environment, harassment prevention, or peer conduct issues.", active: true },
+          { id: "grv-policy-compliance", name: "Policy / Compliance", description: "Company policy inquiries, regulatory questions, or compliance appeals.", active: true },
+          { id: "grv-it-access", name: "IT / System Access", description: "System credentials, software licenses, or hardware access tickets.", active: true },
+          { id: "grv-others", name: "Others", description: "General employee grievances and feedback requests.", active: true },
+        ];
+      }
+    }
+
+    if (companyConfig && !companyConfig.approvalWorkflows) {
+      companyConfig.approvalWorkflows = {
+        loan: [
+          {
+            id: "loan-salary-adv",
+            name: "Salary Advance (Monthly)",
+            category: "Advance Loan Request",
+            description: "Advance salary payout against upcoming month payroll with zero interest.",
+            active: true,
+            approvalType: "sequential",
+            escalationDays: 2,
+            escalationAction: "Move to next approver",
+            workflowMode: "manual",
+            finalLevelAction: "approve_send",
+            emailDelivery: true,
+            manualSteps: [
+              { id: "loan-1", name: "Reporting Manager", role: "Direct Manager", department: "Management", permission: "approve_only", embedSignature: false },
+              { id: "loan-2", name: "Finance Manager", role: "Finance Head", department: "Finance", permission: "approve_edit", embedSignature: true },
+              { id: "loan-3", name: "MD / CEO", role: "Top Level Authority", department: "Executive", permission: "final_approve", embedSignature: true },
+            ],
+          },
+          {
+            id: "loan-medical",
+            name: "Emergency Medical Loan",
+            category: "Advance Loan Request",
+            description: "Special medical assistance advance with customized repayment EMI installments.",
+            active: true,
+            approvalType: "all",
+            escalationDays: 1,
+            escalationAction: "Move to next approver",
+            workflowMode: "auto",
+            finalLevelAction: "approve_send",
+            emailDelivery: true,
+            manualSteps: [],
+          },
+          {
+            id: "loan-festival",
+            name: "Festival Advance Loan",
+            category: "Advance Loan Request",
+            description: "Company seasonal festival advance with standard zero-interest salary deduction.",
+            active: true,
+            approvalType: "sequential",
+            escalationDays: 2,
+            escalationAction: "Move to next approver",
+            workflowMode: "auto",
+            finalLevelAction: "approve_send",
+            emailDelivery: true,
+            manualSteps: [],
+          },
+        ],
+        grievance: [
+          { id: "grv-missing-punch", name: "Missing Punch (Check-in / Check-out)", category: "Grievance", description: "Attendance correction ticket when clock-in or out punch was missed.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "grv-leave-not-approved", name: "Leave Not Approved", category: "Grievance", description: "Grievance ticket for delayed or disputed leave requests.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "grv-payroll-salary", name: "Payroll & Salary Issues", category: "Grievance", description: "Disputes or corrections in salary computation, deductions, or allowances.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "grv-workplace-behavior", name: "Workplace / Behavior", category: "Grievance", description: "Workplace environment, harassment prevention, or peer conduct issues.", active: true, approvalType: "all", escalationDays: 1, workflowMode: "manual", finalLevelAction: "approve_only" },
+          { id: "grv-policy-compliance", name: "Policy / Compliance", category: "Grievance", description: "Company policy inquiries, regulatory questions, or compliance appeals.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "grv-it-access", name: "IT / System Access", category: "Grievance", description: "System credentials, software licenses, or hardware access tickets.", active: true, approvalType: "any", escalationDays: 1, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "grv-others", name: "Others", category: "Grievance", description: "General employee grievances and feedback requests.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+        ],
+        attendance: [
+          { id: "att-missing-punch", name: "Missing Punch / Regularization", category: "Attendance", description: "Attendance punch correction request for missed check-in/out.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "att-weekoff-holiday", name: "Weekly Off / Holiday Work (Comp-Off)", category: "Attendance", description: "Permission to work on assigned weekly off days or holidays for comp-off leave credit.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "att-overtime", name: "Overtime Approval", category: "Attendance", description: "Pre-approval or claim for extra shift hours worked beyond standard shift.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "att-early-leave", name: "Early Leave", category: "Attendance", description: "Permission to depart early from office for official or emergency reasons.", active: true, approvalType: "any", escalationDays: 1, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "att-late-coming", name: "Late Coming", category: "Attendance", description: "Intimation or waiver request for arriving after grace period.", active: true, approvalType: "any", escalationDays: 1, workflowMode: "auto", finalLevelAction: "approve_only" },
+          { id: "att-short-leave", name: "Short Leave / Half Day", category: "Attendance", description: "Standard permission (1-2 hours) or half-day afternoon check-in request.", active: true, approvalType: "sequential", escalationDays: 2, workflowMode: "auto", finalLevelAction: "approve_only" },
+        ],
+        compoff: [
+          {
+            id: "compoff-weekend",
+            name: "Weekend Duty Comp-Off",
+            category: "Comp-Off Request",
+            description: "Claim compensatory leave credit for working on scheduled weekly off days (Saturday/Sunday).",
+            active: true,
+            approvalType: "sequential",
+            escalationDays: 2,
+            escalationAction: "Move to next approver",
+            workflowMode: "manual",
+            finalLevelAction: "approve_only",
+            emailDelivery: true,
+            manualSteps: [
+              { id: "co-1", name: "Reporting Manager", role: "Direct Manager", department: "Management", permission: "approve_only", embedSignature: false },
+              { id: "co-2", name: "HR Manager", role: "HR Head", department: "Human Resources", permission: "final_approve", embedSignature: true },
+            ],
+          },
+          {
+            id: "compoff-holiday",
+            name: "Gazetted Holiday Comp-Off",
+            category: "Comp-Off Request",
+            description: "Permission and leave balance crediting for emergency support during national / company public holidays.",
+            active: true,
+            approvalType: "sequential",
+            escalationDays: 2,
+            escalationAction: "Move to next approver",
+            workflowMode: "auto",
+            finalLevelAction: "approve_only",
+            emailDelivery: true,
+            manualSteps: [],
+          },
+          {
+            id: "compoff-urgent-overtime",
+            name: "Urgent Project / Night Shift Comp-Off",
+            category: "Comp-Off Request",
+            description: "Compensatory time off awarded for critical production release duty or extended overnight shifts.",
+            active: true,
+            approvalType: "any",
+            escalationDays: 1,
+            escalationAction: "Move to next approver",
+            workflowMode: "auto",
+            finalLevelAction: "approve_only",
+            emailDelivery: true,
+            manualSteps: [],
+          },
+        ],
+      };
     }
 
     let tenantRoles = roles;
@@ -671,7 +797,491 @@ app.get("/api/companies/initial-state", async (req, res) => {
       holidays: tenantHolidays,
       roster: roster || [],
       grievances: grievances || [],
+      requests: requests || [],
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 1a. Centralized Approval Settings - Get & Save Endpoints
+app.get("/api/companies/approval-settings", async (req, res) => {
+  const { tenantId } = req.query;
+  if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+  try {
+    const configRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.config,
+      Key: { tenantId, id: "config" },
+    }));
+    const approvalWorkflows = configRes.Item?.approvalWorkflows || null;
+    res.json({ success: true, approvalWorkflows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/companies/approval-settings", async (req, res) => {
+  const { tenantId, workflows } = req.body;
+  if (!tenantId || !workflows) {
+    return res.status(400).json({ error: "tenantId and workflows required" });
+  }
+  try {
+    const configRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.config,
+      Key: { tenantId, id: "config" },
+    }));
+    const currentConfig = configRes.Item || { tenantId, id: "config" };
+    const updatedConfig = {
+      ...currentConfig,
+      approvalWorkflows: workflows,
+      updatedAt: new Date().toISOString(),
+    };
+    if (workflows.grievance && Array.isArray(workflows.grievance)) {
+      updatedConfig.grievanceTypes = workflows.grievance.map((g) => ({
+        id: g.id,
+        name: g.name,
+        description: g.description,
+        active: g.active !== false,
+      }));
+    }
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.config,
+      Item: updatedConfig,
+    }));
+    console.log(`[ApprovalSettings] Workflows saved successfully in DynamoDB for tenant: ${tenantId}`);
+    res.json({ success: true, workflows });
+  } catch (error) {
+    console.error(`[ApprovalSettings] Save error:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// UNIFIED REQUESTS & APPROVALS WORKFLOW ENGINE
+// (Advance Loans, Comp-Offs, Grievances, Attendance & Documents)
+// ==========================================
+
+// Helper: Resolve workflow from company approvalWorkflows
+function resolveApprovalWorkflow(companyConfig, category, workflowId) {
+  const workflows = companyConfig?.approvalWorkflows;
+  if (!workflows) return null;
+
+  let categoryKey = "documents";
+  if (category === "loan" || category === "advance_loan") categoryKey = "loan";
+  else if (category === "comp_off" || category === "compoff") categoryKey = "compoff";
+  else if (category === "attendance") categoryKey = "attendance";
+  else if (category === "grievance") categoryKey = "grievance";
+
+  const list = workflows[categoryKey] || [];
+  if (workflowId) {
+    const found = list.find((w) => w.id === workflowId || w.name.toLowerCase().includes(workflowId.toLowerCase()));
+    if (found) return found;
+  }
+  return list[0] || null;
+}
+
+// 1. Submit Any Unified Request (Respects Admin Approval Settings)
+app.post("/api/requests/submit", async (req, res) => {
+  const {
+    tenantId,
+    employeeId,
+    employeeName,
+    category,
+    workflowId,
+    type,
+    title,
+    amount,
+    amountOrDays,
+    tenor,
+    date,
+    details,
+    reason,
+    notes,
+    metadata,
+  } = req.body;
+
+  if (!tenantId || !employeeId || !category) {
+    return res.status(400).json({ error: "Missing required fields: tenantId, employeeId, category" });
+  }
+
+  try {
+    // 1. Load company config and employee
+    const [configItems, empItems] = await Promise.all([
+      getTenantItems(COMPANY_TABLES.config, tenantId),
+      getTenantItems(COMPANY_TABLES.employees, tenantId),
+    ]);
+
+    const companyConfig = configItems.find((c) => c.id === "config") || {};
+    const employee = empItems.find((e) => e.id === employeeId || e.empCode === employeeId || e.name === employeeId);
+
+    // 2. Resolve matching workflow config from Admin Approval Settings
+    const workflow = resolveApprovalWorkflow(companyConfig, category, workflowId);
+
+    if (workflow && workflow.active === false) {
+      return res.status(403).json({
+        error: `This request type (${workflow.name || category}) is currently deactivated by company administrators.`,
+      });
+    }
+
+    // 3. Build Approval Steps from workflow settings
+    let approvalSteps = [];
+    const approvalType = workflow?.approvalType || "sequential";
+    const escalationDays = workflow?.escalationDays || 2;
+
+    if (workflow && workflow.workflowMode === "manual" && workflow.manualSteps && workflow.manualSteps.length > 0) {
+      approvalSteps = workflow.manualSteps.map((step, idx) => ({
+        id: step.id || `step-${idx + 1}`,
+        level: idx + 1,
+        approverId: step.approverId || undefined,
+        approverName: step.name || "Approver",
+        roleName: step.role || "Reviewer",
+        department: step.department || "Management",
+        permission: step.permission || "approve_only",
+        embedSignature: !!step.embedSignature,
+        status: "Pending",
+      }));
+    } else {
+      // Automatic Hierarchy
+      const managerName = employee?.reportingManager || "Reporting Manager";
+      approvalSteps = [
+        {
+          id: `step-1-${Date.now()}`,
+          level: 1,
+          approverName: managerName,
+          roleName: "Reporting Manager (Level 1)",
+          department: employee?.department || "Operations",
+          permission: "approve_only",
+          embedSignature: false,
+          status: "Pending",
+        },
+        {
+          id: `step-2-${Date.now()}`,
+          level: 2,
+          approverName: "HR Manager",
+          roleName: "Human Resources Head",
+          department: "Human Resources",
+          permission: "approve_only",
+          embedSignature: true,
+          status: "Pending",
+        },
+      ];
+
+      if (category === "loan" || category === "advance_loan") {
+        approvalSteps.push({
+          id: `step-3-${Date.now()}`,
+          level: 3,
+          approverName: "Finance Head / Director",
+          roleName: "Finance & Payroll Authority",
+          department: "Finance",
+          permission: "final_approve",
+          embedSignature: true,
+          status: "Pending",
+        });
+      }
+    }
+
+    const isAutoApproved = workflow?.workflowMode === "auto" && workflow?.finalLevelAction === "auto_approve";
+    const initialStatus = isAutoApproved ? "Approved" : "Pending";
+
+    const newRequest = {
+      id: `${category}-${Date.now()}`,
+      tenantId,
+      employeeId,
+      employeeName: employeeName || employee?.name || "Employee",
+      empCode: employee?.empCode || employee?.code || "",
+      department: employee?.department || "",
+      category,
+      workflowId: workflow?.id || workflowId || category,
+      workflowName: workflow?.name || type || category,
+      type: type || workflow?.name || "General Request",
+      title: title || `${workflow?.name || category}: ${amountOrDays || amount || ""}`,
+      amount: amount ? Number(amount) : undefined,
+      amountOrDays: amountOrDays || (amount ? `₹${Number(amount).toLocaleString()}` : undefined),
+      tenor: tenor || undefined,
+      date: date || new Date().toISOString().slice(0, 10),
+      details: details || reason || "",
+      reason: reason || details || "",
+      notes: notes || (workflow ? `Approval Mode: ${workflow.approvalType.toUpperCase()} • Escalation: ${escalationDays}d` : ""),
+      status: initialStatus,
+      currentLevel: 1,
+      totalLevels: approvalSteps.length,
+      approvalType,
+      escalationDays,
+      approvalSteps,
+      metadata: metadata || {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Save to DynamoDB requests table
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.requests,
+      Item: newRequest,
+    }));
+
+    // If grievance category, also mirror to grievances table for dedicated thread chat
+    if (category === "grievance") {
+      const grievanceRecord = {
+        id: newRequest.id,
+        tenantId,
+        ticketNumber: `GRV-${Date.now().toString().slice(-5)}`,
+        employeeId,
+        employeeName: newRequest.employeeName,
+        empCode: newRequest.empCode,
+        department: newRequest.department,
+        category: newRequest.workflowName || "General",
+        priority: metadata?.priority || "Medium",
+        assignedRole: approvalSteps[0]?.roleName || "HR Grievance Committee",
+        subject: title || details || "Grievance Ticket",
+        description: details || reason || "",
+        status: "Open",
+        thread: [
+          {
+            id: `msg-${Date.now()}`,
+            senderId: employeeId,
+            senderName: newRequest.employeeName,
+            senderRole: "Employee",
+            message: details || reason || "Initial ticket submission",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.grievances, Item: grievanceRecord }));
+    }
+
+    // Notice for first level approver
+    const firstApprover = approvalSteps[0];
+    await createCompanyNotice(tenantId, {
+      title: `New ${newRequest.workflowName} Request`,
+      description: `${newRequest.employeeName} submitted a ${newRequest.workflowName} request (${newRequest.amountOrDays || ""}). Action required.`,
+      category: "approval",
+      targetRole: firstApprover?.roleName || "Manager",
+    });
+
+    console.log(`[UnifiedRequest] Created request "${newRequest.id}" (${newRequest.workflowName}) for ${newRequest.employeeName}`);
+    res.json({ success: true, item: newRequest });
+  } catch (error) {
+    console.error("[UnifiedRequest Submit Error]:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. Act on Unified Request (Approve / Reject / Forward / Escalate)
+app.post("/api/requests/act", async (req, res) => {
+  const { tenantId, requestId, action, comment, actorId, actorName, actorRole } = req.body;
+  if (!tenantId || !requestId || !action) {
+    return res.status(400).json({ error: "Missing required fields: tenantId, requestId, action" });
+  }
+
+  try {
+    const reqRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.requests,
+      Key: { tenantId, id: requestId },
+    }));
+
+    const requestItem = reqRes.Item;
+    if (!requestItem) {
+      return res.status(404).json({ error: "Request not found" });
+    }
+
+    const now = new Date().toISOString();
+    let updatedItem = { ...requestItem };
+
+    const currentLvl = requestItem.currentLevel || 1;
+    const totalLvls = requestItem.totalLevels || requestItem.approvalSteps?.length || 1;
+    const approvalType = requestItem.approvalType || "sequential";
+
+    if (action === "reject" || action === "Rejected") {
+      const updatedSteps = (requestItem.approvalSteps || []).map((step) => {
+        if (step.level === currentLvl) {
+          return {
+            ...step,
+            status: "Rejected",
+            approverName: actorName || "Approver",
+            comment: comment || `Declined by ${actorRole || "Approver"}`,
+            actionAt: now,
+          };
+        }
+        return step;
+      });
+
+      updatedItem = {
+        ...requestItem,
+        status: "Rejected",
+        rejectedReason: comment || `Declined by ${actorRole || "Approver"} (${actorName || ""})`,
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+        updatedAt: now,
+      };
+    } else if (action === "approve_close") {
+      const updatedSteps = (requestItem.approvalSteps || []).map((step) => ({
+        ...step,
+        status: "Approved",
+        approverName: step.level === currentLvl ? (actorName || "Approver") : step.approverName,
+        comment: step.level === currentLvl ? (comment || "Approved & Closed directly") : step.comment,
+        actionAt: step.level === currentLvl ? now : step.actionAt,
+      }));
+
+      updatedItem = {
+        ...requestItem,
+        status: "Approved",
+        currentLevel: totalLvls,
+        approvedBy: actorName || "Approver",
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "Approved & Closed directly",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+        updatedAt: now,
+      };
+    } else {
+      // action === "approve" or "approve_forward"
+      let isFinalLevel = false;
+
+      if (approvalType === "any") {
+        isFinalLevel = true;
+      } else if (approvalType === "sequential") {
+        isFinalLevel = currentLvl >= totalLvls;
+      } else if (approvalType === "all") {
+        const approvedCount = (requestItem.approvalSteps || []).filter((s) => s.status === "Approved").length + 1;
+        isFinalLevel = approvedCount >= totalLvls;
+      }
+
+      const nextLevel = isFinalLevel ? currentLvl : currentLvl + 1;
+      const finalStatus = isFinalLevel ? "Approved" : "Pending";
+
+      const updatedSteps = (requestItem.approvalSteps || []).map((step) => {
+        if (step.level === currentLvl) {
+          return {
+            ...step,
+            status: "Approved",
+            approverName: actorName || "Approver",
+            comment: comment || "Approved & Progressed",
+            actionAt: now,
+          };
+        }
+        return step;
+      });
+
+      updatedItem = {
+        ...requestItem,
+        status: finalStatus,
+        currentLevel: nextLevel,
+        approvedBy: isFinalLevel ? (actorName || "Approver") : requestItem.approvedBy,
+        actedBy: actorName || "Approver",
+        actedById: actorId,
+        actedByRole: actorRole || "Manager",
+        approverComment: comment || "",
+        actedAt: now,
+        approvalSteps: updatedSteps,
+        updatedAt: now,
+      };
+    }
+
+    // Save updated request in DynamoDB
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.requests,
+      Item: updatedItem,
+    }));
+
+    // If final approved and category is comp_off: automatically mark PRESENT for all dates worked in date range & credit leave balance
+    if (updatedItem.status === "Approved" && (updatedItem.category === "comp_off" || updatedItem.category === "compoff" || updatedItem.category === "att-weekoff-holiday")) {
+      try {
+        const fromDateStr = updatedItem.metadata?.fromDate || updatedItem.metadata?.compOffDate || updatedItem.date;
+        const toDateStr = updatedItem.metadata?.toDate || fromDateStr;
+
+        const datesToMark = [];
+        if (fromDateStr && toDateStr) {
+          const cur = new Date(fromDateStr);
+          const end = new Date(toDateStr);
+          if (!isNaN(cur.getTime()) && !isNaN(end.getTime())) {
+            while (cur <= end) {
+              datesToMark.push(cur.toISOString().split("T")[0]);
+              cur.setDate(cur.getDate() + 1);
+            }
+          } else {
+            datesToMark.push(fromDateStr);
+          }
+        } else if (fromDateStr) {
+          datesToMark.push(fromDateStr);
+        }
+
+        for (const dDate of datesToMark) {
+          const attendanceRecord = {
+            id: `att-${updatedItem.employeeId}-${dDate}`,
+            tenantId,
+            employeeId: updatedItem.employeeId,
+            employeeName: updatedItem.employeeName,
+            empCode: updatedItem.empCode || "",
+            date: dDate,
+            status: "present",
+            checkIn: "09:00 AM",
+            checkOut: "06:00 PM",
+            punchSource: "Comp-Off Approved",
+            notes: `Comp-Off Duty Approved: ${updatedItem.workflowName || updatedItem.type || "Compensation Off"} (Avail: ${updatedItem.metadata?.availDateLabel || updatedItem.metadata?.availCompOffDate || "Comp-Off Credit"})`,
+            updatedAt: now,
+          };
+          await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.attendance, Item: attendanceRecord }));
+          console.log(`[CompOff Attendance] Marked employee ${updatedItem.employeeName} (${updatedItem.employeeId}) PRESENT for duty date: ${dDate}`);
+        }
+
+        const empRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.employees,
+          Key: { tenantId, id: updatedItem.employeeId },
+        }));
+        const emp = empRes.Item;
+        if (emp) {
+          const creditAmount = updatedItem.amountOrDays?.includes("0.5") || updatedItem.amountOrDays?.includes("Half") ? 0.5 : 1.0;
+          emp.compOffBalance = (emp.compOffBalance || 0) + creditAmount;
+          emp.updatedAt = now;
+          await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.employees, Item: emp }));
+          console.log(`[CompOff Credit] Added ${creditAmount} day(s) comp-off credit to employee ${emp.name} (${emp.id})`);
+        }
+      } catch (empErr) {
+        console.warn("[CompOff Auto-Present / Credit Error]:", empErr.message);
+      }
+    }
+
+    // Notify employee of progress or final approval
+    await createCompanyNotice(tenantId, {
+      title: updatedItem.status === "Approved"
+        ? `${updatedItem.workflowName} Approved!`
+        : updatedItem.status === "Rejected"
+        ? `${updatedItem.workflowName} Declined`
+        : `${updatedItem.workflowName} Level ${currentLvl} Approved`,
+      description: `Your ${updatedItem.workflowName} status is now ${updatedItem.status} by ${actorName || "Management"}${comment ? " · " + comment : ""}.`,
+      category: "approval",
+      targetEmployeeId: updatedItem.employeeId,
+    });
+
+    res.json({ success: true, item: updatedItem });
+  } catch (error) {
+    console.error("[UnifiedRequest Act Error]:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. List Unified Requests
+app.get("/api/requests/list", async (req, res) => {
+  const { tenantId, employeeId, category } = req.query;
+  if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+
+  try {
+    let items = await getTenantItems(COMPANY_TABLES.requests, tenantId);
+    if (employeeId) {
+      items = items.filter((i) => i.employeeId === employeeId || i.empCode === employeeId);
+    }
+    if (category && category !== "all") {
+      items = items.filter((i) => i.category === category);
+    }
+    res.json({ success: true, items });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -945,7 +1555,7 @@ async function createCompanyNotice(tenantId, { title, description, category, tar
 
 // 1b. Create Document Approval Request
 app.post("/api/documents/request", async (req, res) => {
-  const { tenantId, letterKey, letterTitle, employeeId, templateBody, format, requestedBy, note, approvalChain } = req.body;
+  const { tenantId, letterKey, letterTitle, employeeId, employeeName, employeeEmail, templateBody, format, requestedBy, note, approvalChain } = req.body;
   if (!tenantId || !letterKey || !employeeId) {
     return res.status(400).json({ error: "Missing required fields: tenantId, letterKey, employeeId" });
   }
@@ -963,9 +1573,11 @@ app.post("/api/documents/request", async (req, res) => {
       letterKey,
       letterTitle: letterTitle || letterKey,
       employeeId,
+      employeeName: employeeName || "Employee",
+      employeeEmail: employeeEmail || "",
       templateBody: templateBody || "",
       format: format || "pdf",
-      requestedBy: requestedBy || "Admin",
+      requestedBy: requestedBy || "Employee",
       requestedAt: new Date().toISOString(),
       steps,
       currentStep: 0,
@@ -1063,13 +1675,23 @@ app.post("/api/documents/act", async (req, res) => {
 
     await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.docRequests, Item: updatedDocReq }));
 
-    // Generate real-time notification
-    await createCompanyNotice(tenantId, {
-      title: action === "approve" ? "Document Request Approved" : "Document Request Rejected",
-      description: `Your ${docReq.letterTitle} was ${action === "approve" ? (nextStatus === "approved" ? "fully approved and is ready for signature" : "approved at step " + (idx + 1)) : "rejected"} by ${actorName || "Approver"}${comment ? ": " + comment : "."}`,
-      category: "document",
-      targetEmployeeId: docReq.employeeId,
-    });
+    // Dispatch automated email notification to employee
+    const nextApproverStep = steps[nextStep];
+    const emailAction = action === "reject" ? "rejected" : (nextStatus === "approved" ? "fully_approved" : "step_approved");
+    sendDocumentApprovalNotificationEmail({
+      tenantId,
+      employeeId: docReq.employeeId,
+      employeeEmail: docReq.employeeEmail,
+      employeeName: docReq.employeeName,
+      docTitle: docReq.letterTitle || docReq.title || "Official Document",
+      action: emailAction,
+      actorName: actorName || "Approver",
+      actorRole: actorRole || "Management",
+      currentStepIndex: idx + 1,
+      totalSteps: steps.length || 1,
+      nextApproverName: nextApproverStep ? (nextApproverStep.name || nextApproverStep.role || "Next Level Reviewer") : "",
+      comment: comment || "",
+    }).catch((e) => console.warn("[DocApprovalEmail Error]:", e.message));
 
     res.json({ success: true, item: updatedDocReq });
   } catch (error) {
@@ -2756,6 +3378,124 @@ async function sendWelcomeEmail({ to, employeeName, empCode, password, companyNa
   }
 }
 
+// Document Request Approval & Step Progress Notification Email Service
+async function sendDocumentApprovalNotificationEmail({
+  tenantId,
+  employeeId,
+  employeeEmail,
+  employeeName,
+  docTitle,
+  action, // 'step_approved' | 'fully_approved' | 'rejected' | 'forwarded'
+  actorName = "Approver",
+  actorRole = "Manager",
+  currentStepIndex = 1,
+  totalSteps = 1,
+  nextApproverName = "",
+  comment = "",
+  companyName = "SwiftHR",
+}) {
+  try {
+    let targetEmail = employeeEmail;
+    let targetName = employeeName || "Employee";
+
+    if (!targetEmail && employeeId && tenantId) {
+      try {
+        const emps = await getTenantItems(COMPANY_TABLES.employees, tenantId);
+        const emp = emps.find((e) => e.id === employeeId || e.empCode === employeeId);
+        if (emp) {
+          targetEmail = emp.email || emp.workEmail || emp.personalEmail;
+          targetName = emp.name || emp.fullName || targetName;
+        }
+      } catch (e) {
+        console.warn("[DocApprovalEmail] Could not query employee table:", e.message);
+      }
+    }
+
+    if (!targetEmail || !targetEmail.includes("@")) {
+      console.log(`[DocApprovalEmail] No valid email found for employee ${employeeId || employeeName}, skipped notification.`);
+      return { skipped: true, reason: "No email address found" };
+    }
+
+    let subject = `Document Request Update: ${docTitle}`;
+    let htmlBody = "";
+    let plainText = "";
+
+    if (action === "fully_approved") {
+      subject = `🎉 Document Approved: ${docTitle} — Ready for Download`;
+      htmlBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+          <div style="text-align: center; margin-bottom: 20px;">
+            <h2 style="color: #059669; margin: 0;">Request Fully Approved!</h2>
+            <p style="color: #64748b; font-size: 14px; margin-top: 4px;">${companyName} Document Approval System</p>
+          </div>
+          <p style="color: #334155; font-size: 15px;">Hello <strong>${targetName}</strong>,</p>
+          <p style="color: #334155; font-size: 15px;">Great news! Your request for <strong>${docTitle}</strong> has received final approval from <strong>${actorName}</strong>.</p>
+          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+            <p style="margin: 0; color: #166534; font-weight: bold; font-size: 14px;">✅ Status: Fully Approved & Available</p>
+            <p style="margin: 6px 0 0 0; color: #15803d; font-size: 13px;">You can now view, e-sign, or download this official document directly inside the <strong>SwiftHR Mobile App</strong> under the Documents tab.</p>
+          </div>
+          ${comment ? `<p style="color: #64748b; font-size: 13px;"><em>Approver Note: ${comment}</em></p>` : ""}
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">This is an automated notification from ${companyName} HRMS.</p>
+        </div>
+      `;
+      plainText = `Hello ${targetName},\n\nYour request for "${docTitle}" has been fully approved by ${actorName}.\n\nYou can now view and download your document in the SwiftHR mobile app.\n\nBest regards,\n${companyName} HR Team`;
+    } else if (action === "step_approved") {
+      subject = `Progress Update: ${docTitle} Approved (Step ${currentStepIndex} of ${totalSteps})`;
+      htmlBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+          <div style="text-align: center; margin-bottom: 20px;">
+            <h2 style="color: #0284c7; margin: 0;">Approval Progress Update</h2>
+            <p style="color: #64748b; font-size: 14px; margin-top: 4px;">${companyName} Document Approval Pipeline</p>
+          </div>
+          <p style="color: #334155; font-size: 15px;">Hello <strong>${targetName}</strong>,</p>
+          <p style="color: #334155; font-size: 15px;">Your document request for <strong>${docTitle}</strong> has been approved at <strong>Step ${currentStepIndex} of ${totalSteps}</strong> by <strong>${actorName}</strong> (${actorRole}).</p>
+          <div style="background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 16px; margin: 20px 0;">
+            <p style="margin: 0; color: #0369a1; font-weight: bold; font-size: 14px;">🔄 Next Stage: ${nextApproverName || "Next Level Reviewer"}</p>
+            <p style="margin: 6px 0 0 0; color: #0284c7; font-size: 13px;">The document has been automatically routed to the next approver in your organization's workflow matrix.</p>
+          </div>
+          ${comment ? `<p style="color: #64748b; font-size: 13px;"><em>Approver Remarks: ${comment}</em></p>` : ""}
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">This is an automated notification from ${companyName} HRMS.</p>
+        </div>
+      `;
+      plainText = `Hello ${targetName},\n\nYour request for "${docTitle}" has been approved at Step ${currentStepIndex} of ${totalSteps} by ${actorName}.\nNext approver: ${nextApproverName || "Next Reviewer"}.\n\nBest regards,\n${companyName} HR Team`;
+    } else if (action === "rejected") {
+      subject = `Document Request Declined: ${docTitle}`;
+      htmlBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+          <div style="text-align: center; margin-bottom: 20px;">
+            <h2 style="color: #dc2626; margin: 0;">Request Not Approved</h2>
+            <p style="color: #64748b; font-size: 14px; margin-top: 4px;">${companyName} Document Approval System</p>
+          </div>
+          <p style="color: #334155; font-size: 15px;">Hello <strong>${targetName}</strong>,</p>
+          <p style="color: #334155; font-size: 15px;">Your document request for <strong>${docTitle}</strong> was reviewed and declined by <strong>${actorName}</strong> (${actorRole}).</p>
+          <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 20px 0;">
+            <p style="margin: 0; color: #991b1b; font-weight: bold; font-size: 14px;">Reason / Comments:</p>
+            <p style="margin: 6px 0 0 0; color: #b91c1c; font-size: 13px;">${comment || "No specific comments provided. Please contact HR for clarification."}</p>
+          </div>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">This is an automated notification from ${companyName} HRMS.</p>
+        </div>
+      `;
+      plainText = `Hello ${targetName},\n\nYour request for "${docTitle}" was declined by ${actorName}.\nReason: ${comment || "None provided"}.\n\nBest regards,\n${companyName} HR Team`;
+    }
+
+    const info = await emailTransporter.sendMail({
+      from: `"${companyName}" <no-reply@swift.ai>`,
+      to: targetEmail,
+      subject,
+      text: plainText,
+      html: htmlBody,
+    });
+    console.log(`[DocApprovalEmail] Successfully sent email to ${targetEmail} for action: ${action}, messageId: ${info.messageId}`);
+    return { success: true, messageId: info.messageId };
+  } catch (err) {
+    console.warn(`[DocApprovalEmail] Failed to send email:`, err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 // Single Welcome Email Route
 app.post("/api/employees/send-welcome-email", async (req, res) => {
   const { to, employeeName, empCode, password, companyName } = req.body;
@@ -2885,6 +3625,395 @@ Your Responsibilities & Tone:
   }
 });
 
+// ==========================================
+// SWIFT AI: DOCUMENT TEMPLATE AUTO-TAGGING & REFINING
+// ==========================================
+app.post("/api/ai/auto-tag-document", async (req, res) => {
+  try {
+    const { documentName, rawContent, instruction, documentSubject } = req.body;
+    if (!rawContent && !instruction) {
+      return res.status(400).json({ success: false, error: "rawContent or instruction is required" });
+    }
+
+    const availablePlaceholders = [
+      "{{employee_name}} - Full name of employee or candidate",
+      "{{employee_code}} - Unique employee code (e.g. SW-1002)",
+      "{{designation}} - Job title / role",
+      "{{department}} - Department name",
+      "{{branch_name}} - Office branch or work location",
+      "{{joining_date}} - Date of joining",
+      "{{manager_name}} - Reporting manager name and title",
+      "{{ctc_annual}} - Annual Cost to Company in INR (e.g. ₹12,00,000)",
+      "{{ctc_monthly}} - Monthly Gross Salary in INR",
+      "{{revised_ctc}} - Revised annual CTC after promotion/increment",
+      "{{increment_pct}} - Percentage increment (e.g. 15%)",
+      "{{current_date}} - Date of letter issuance",
+      "{{probation_months}} - Duration of probation (e.g. 6 Months)",
+      "{{relieving_date}} - Separation or relieving date",
+      "{{last_working_day}} - Last official working day",
+      "{{company_name}} - Legal name of company",
+      "{{company_address}} - Full office address",
+      "{{authorized_signatory_name}} - Signatory HR / Executive name",
+      "{{authorized_signatory_designation}} - Signatory role title"
+    ];
+
+    const systemPrompt = `You are the SwiftHR Enterprise AI Document Architect.
+Your task is to analyze document templates (Offer letters, Appointment letters, Relieving letters, Warning letters, NDA, Verification, etc.) and intelligently inject the official SwiftHR placeholders in their exact rightful places.
+
+Available SwiftHR Dynamic Placeholders (USE EXACT SYNTAX with double curly braces):
+${availablePlaceholders.map(p => `- ${p}`).join("\n")}
+
+Rules:
+1. If the input text contains hardcoded placeholder names (e.g. "John Doe", "Jane", "[Employee Name]", "Rs. 50,000", "01/01/2024", "ABC Company"), intelligently replace them with the corresponding SwiftHR placeholder (e.g. {{employee_name}}, {{ctc_annual}}, {{joining_date}}, {{company_name}}).
+2. If the user provided custom instructions (e.g. "make it more formal", "add notice period clause", "draft from scratch"), draft or refine the document accordingly while ensuring all necessary SwiftHR placeholders are embedded.
+3. Preserve clean professional HR formatting, paragraph structure, letter layout, and respectful corporate tone.
+4. Output your answer STRICTLY as a valid JSON object with the following schema (no markdown fences around the JSON):
+{
+  "subject": "The official document subject with placeholders if appropriate",
+  "content": "The full refined letter body with placeholders",
+  "signatoryName": "Recommended signatory name or existing placeholder",
+  "signatoryRole": "Recommended signatory role",
+  "detectedPlaceholders": ["list", "of", "placeholders", "used"],
+  "summaryOfChanges": "Brief 1-sentence summary of what AI refined"
+}`;
+
+    const userPrompt = `Document Type: ${documentName || "Official HR Document"}
+Current Subject: ${documentSubject || ""}
+User Instruction / Request: ${instruction || "Analyze the text format and automatically place all appropriate SwiftHR dynamic placeholders in their exact locations."}
+
+Raw Document Content to Process:
+${rawContent || ""}`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+    });
+
+    const parsed = JSON.parse(completion.choices[0].message.content);
+    return res.json({
+      success: true,
+      ...parsed,
+    });
+  } catch (err) {
+    console.error("[SWIFT AI Auto-Tag] Error:", err?.message || err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || "Failed to process document with AI",
+    });
+  }
+});
+
+// ==========================================
+// DYNAMIC PERSONALIZED DOCUMENT PDF GENERATOR
+// ==========================================
+const DEFAULT_BACKEND_DOC_TEMPLATES = {
+  "doc-offer": {
+    subject: "Employment Offer Letter — {{employee_name}}",
+    content: `Date: {{current_date}}
+
+To,
+{{employee_name}}
+Candidate Code: {{employee_code}}
+
+Dear {{employee_name}},
+
+Subject: Offer of Employment for the position of {{designation}}
+
+We are pleased to offer you the position of {{designation}} in the {{department}} Department at {{company_name}}.
+
+Key Terms of Offer:
+1. Position: {{designation}}
+2. Department: {{department}}
+3. Location: {{branch_name}}
+4. Date of Joining: {{joining_date}}
+5. Annual Total Cost to Company (CTC): {{ctc_annual}} (Fixed Gross Monthly: {{ctc_monthly}})
+6. Reporting Authority: {{manager_name}}
+7. Probation Period: {{probation_months}} from the date of joining.
+
+Your formal Appointment Letter containing detailed terms and conditions of employment, benefits, and workplace code of conduct will be issued on the day of joining upon submission of the required verification documents.
+
+Please sign and return the duplicate copy of this letter as a token of your formal acceptance of this offer.
+
+We welcome you to {{company_name}} and look forward to a rewarding professional journey together.
+
+Sincerely,
+For {{company_name}}
+
+{{authorized_signatory_name}}
+{{authorized_signatory_designation}}`,
+  },
+  "doc-appointment": {
+    subject: "Letter of Appointment — {{employee_name}} ({{employee_code}})",
+    content: `Date: {{current_date}}
+
+To,
+{{employee_name}}
+Employee Code: {{employee_code}}
+Location: {{branch_name}}
+
+Dear {{employee_name}},
+
+Subject: Letter of Appointment as {{designation}}
+
+With reference to your application, interview, and subsequent offer acceptance, management is pleased to appoint you as {{designation}} in {{company_name}}, effective from your date of joining on {{joining_date}}.
+
+1. Designation & Duties:
+You shall perform duties associated with the role of {{designation}} in the {{department}} Department, reporting directly to {{manager_name}}.
+
+2. Remuneration:
+Your total annual compensation package (CTC) is fixed at {{ctc_annual}} per annum, payable on a monthly basis in accordance with standard company payroll practices.
+
+3. Probation & Confirmation:
+You will be on probation for a period of {{probation_months}} from {{joining_date}}. Based on your performance and conduct, your services will be confirmed in writing.
+
+4. Confidentiality & Code of Conduct:
+You shall maintain strict confidentiality regarding all company intellectual property, customer records, and trade secrets during and after your tenure.
+
+We wish you all the best and trust you will make meaningful contributions toward the growth of {{company_name}}.
+
+Sincerely,
+For {{company_name}}
+
+{{authorized_signatory_name}}
+{{authorized_signatory_designation}}`,
+  },
+  "doc-relieve": {
+    subject: "Relieving Letter & Service Clearance — {{employee_name}}",
+    content: `Date: {{current_date}}
+
+To Whomsoever It May Concern
+
+This is to certify that {{employee_name}} (Employee Code: {{employee_code}}) was employed with {{company_name}} as {{designation}} in the {{department}} Department from {{joining_date}} to {{relieving_date}}.
+
+{{employee_name}} has been relieved from duties at the close of business hours on {{relieving_date}} following formal handover of all company assets and clearance of departmental dues.
+
+During their tenure, we found {{employee_name}} to be sincere, diligent, and committed in the discharge of their duties.
+
+We thank {{employee_name}} for their valuable contributions to {{company_name}} and wish them great success in all future professional endeavors.
+
+For {{company_name}}
+
+{{authorized_signatory_name}}
+{{authorized_signatory_designation}}
+{{company_address}}`,
+  },
+  "doc-exp": {
+    subject: "Experience Certificate — {{employee_name}} ({{employee_code}})",
+    content: `Date: {{current_date}}
+
+EXPERIENCE CERTIFICATE
+
+This is to certify that {{employee_name}} (Employee Code: {{employee_code}}) has served as a full-time employee with {{company_name}} from {{joining_date}} to {{relieving_date}}.
+
+During their service tenure, {{employee_name}} held the position of {{designation}} in the {{department}} Department.
+
+Their conduct, character, and professional competence during the tenure of service with our organization were found to be satisfactory and commendable.
+
+This certificate is issued at the request of the employee for whatever purpose it may serve.
+
+For {{company_name}}
+
+{{authorized_signatory_name}}
+{{authorized_signatory_designation}}`,
+  },
+  "doc-salary-cert": {
+    subject: "Salary Certificate & Income Verification — {{employee_name}}",
+    content: `Date: {{current_date}}
+
+TO WHOMSOEVER IT MAY CONCERN
+
+This is to certify that {{employee_name}} (Employee Code: {{employee_code}}) is currently employed as a full-time employee with {{company_name}} in the capacity of {{designation}} within the {{department}} Department since {{joining_date}}.
+
+As per our payroll records, their present compensation structure is as follows:
+- Gross Monthly Emoluments: {{ctc_monthly}}
+- Total Annual Cost to Company (CTC): {{ctc_annual}}
+
+This certificate is issued upon the specific request of {{employee_name}} for banking, visa, or official verification purposes without any financial liability on part of the company.
+
+For {{company_name}}
+
+{{authorized_signatory_name}}
+{{authorized_signatory_designation}}
+{{company_address}}`,
+  },
+};
+
+function renderDocumentTemplateText(templateText, employee, company, overrides = {}) {
+  const empName = employee?.name || "Aditya Sharma";
+  const empCode = employee?.empCode || "SW-1002";
+  const desig = employee?.designation || "Staff Member";
+  const dept = employee?.department || "General";
+  const branchName = company?.branches?.find((b) => b.id === employee?.branchId)?.name || company?.branches?.[0]?.name || "Head Office";
+  const doj = employee?.doj || employee?.joiningDate || "01-Jul-2024";
+  const managerName = employee?.reportingManager || "Reporting Manager";
+  const annualCtcNum = (employee?.basic || employee?.fixedSalary || 45000) * 12;
+  const monthlyCtcNum = employee?.basic || employee?.fixedSalary || 45000;
+  const annualCtcStr = "₹" + annualCtcNum.toLocaleString("en-IN");
+  const monthlyCtcStr = "₹" + monthlyCtcNum.toLocaleString("en-IN");
+  const compName = company?.legalName || company?.name || "SWIFT Technologies Pvt Ltd";
+  const compAddress = company?.address || "Tech Hub, Tamil Nadu, India";
+  const todayStr = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+
+  const mapping = {
+    "{{employee_name}}": empName,
+    "{{employee_code}}": empCode,
+    "{{designation}}": desig,
+    "{{department}}": dept,
+    "{{branch_name}}": branchName,
+    "{{joining_date}}": doj,
+    "{{manager_name}}": managerName,
+    "{{ctc_annual}}": annualCtcStr,
+    "{{ctc_monthly}}": monthlyCtcStr,
+    "{{company_name}}": compName,
+    "{{company_address}}": compAddress,
+    "{{current_date}}": todayStr,
+    "{{probation_months}}": "6 Months",
+    "{{relieving_date}}": todayStr,
+    "{{last_working_day}}": todayStr,
+    "{{revised_ctc}}": "₹" + Math.round(annualCtcNum * 1.15).toLocaleString("en-IN"),
+    "{{increment_pct}}": "15%",
+    "{{authorized_signatory_name}}": "Dr. K. Anand",
+    "{{authorized_signatory_designation}}": "Head of Human Resources & Operations",
+    ...overrides,
+  };
+
+  let result = templateText || "";
+  for (const [placeholder, val] of Object.entries(mapping)) {
+    result = result.split(placeholder).join(val);
+  }
+  return result;
+}
+
+// Generate & Stream Personalized Document PDF
+async function handleGenerateDocumentPDF(req, res) {
+  try {
+    const tenantId = req.query.tenantId || req.body.tenantId || req.headers["x-tenant-id"] || "superadmin";
+    const employeeId = req.query.employeeId || req.body.employeeId;
+    const docId = req.query.docId || req.body.docId || "doc-offer";
+    const customContent = req.body.content || req.query.content;
+    const customSubject = req.body.subject || req.query.subject;
+    const customSignatoryName = req.body.signatoryName || req.query.signatoryName;
+    const customSignatoryRole = req.body.signatoryRole || req.query.signatoryRole;
+
+    const [employees, configList] = await Promise.all([
+      getTenantItems(COMPANY_TABLES.employees, tenantId),
+      getTenantItems(COMPANY_TABLES.config, tenantId),
+    ]);
+
+    const company = configList.find((c) => c.id === "config") || {};
+    const employee = (employees || []).find((e) => e.id === employeeId || e.empCode === employeeId || e.name === employeeId) || employees?.[0] || {
+      name: "Aditya Sharma",
+      empCode: "SW-1002",
+      designation: "Senior Software Engineer",
+      department: "Engineering",
+      basic: 65000,
+      doj: "01-Jul-2024",
+    };
+
+    // Find configured workflow template if exists
+    const docWorkflows = company?.approvalWorkflows?.documents || [];
+    const workflowItem = docWorkflows.find((d) => d.id === docId);
+
+    const rawTemplate = customContent || workflowItem?.documentTemplate || DEFAULT_BACKEND_DOC_TEMPLATES[docId]?.content || `Date: {{current_date}}
+
+To,
+{{employee_name}} ({{employee_code}})
+{{designation}} - {{department}}
+
+Subject: Official Document Confirmation
+
+This document confirms the official records of {{employee_name}} at {{company_name}}.
+
+For {{company_name}}
+{{authorized_signatory_name}}
+{{authorized_signatory_designation}}`;
+
+    const rawSubject = customSubject || workflowItem?.documentSubject || DEFAULT_BACKEND_DOC_TEMPLATES[docId]?.subject || workflowItem?.name || "Official Document Letter";
+
+    const overrides = {};
+    if (customSignatoryName) overrides["{{authorized_signatory_name}}"] = customSignatoryName;
+    if (customSignatoryRole) overrides["{{authorized_signatory_designation}}"] = customSignatoryRole;
+
+    const finalSubject = renderDocumentTemplateText(rawSubject, employee, company, overrides);
+    const finalContent = renderDocumentTemplateText(rawTemplate, employee, company, overrides);
+
+    const docNameClean = (workflowItem?.name || docId).replace(/[^a-zA-Z0-9_-]/g, "_");
+    const empNameClean = (employee?.name || "Employee").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const filename = `${docNameClean}_${empNameClean}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+    // Create PDF Document
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 50, bottom: 50, left: 55, right: 55 },
+    });
+
+    doc.pipe(res);
+
+    const compLegalName = company?.legalName || company?.name || "SWIFT HRMS ENTERPRISE";
+    const compAddr = company?.address || "Corporate Headquarters, Technology Park, India";
+
+    // Header Branding
+    doc.fillColor("#047857").fontSize(18).font("Helvetica-Bold").text(compLegalName, { align: "left" });
+    doc.fillColor("#4B5563").fontSize(9).font("Helvetica").text(compAddr, { align: "left" });
+    doc.moveDown(0.4);
+
+    // Decorative Separator Line
+    const currentY = doc.y;
+    doc.strokeColor("#10B981").lineWidth(2).moveTo(55, currentY).lineTo(540, currentY).stroke();
+    doc.moveDown(1.2);
+
+    // Document Title Banner
+    doc.fillColor("#111827").fontSize(14).font("Helvetica-Bold").text(finalSubject, { align: "center" });
+    doc.moveDown(1);
+
+    // Document Body Content Paragraphs
+    doc.fillColor("#1F2937").fontSize(10.5).font("Helvetica").lineGap(4);
+
+    const paragraphs = finalContent.split("\n\n");
+    for (const para of paragraphs) {
+      if (para.trim()) {
+        doc.text(para.trim(), { align: "justify", paragraphGap: 6 });
+      }
+    }
+
+    doc.moveDown(2);
+
+    // Official Verification Seal / Signatory Stamp Area
+    if (doc.y > 680) {
+      doc.addPage();
+    }
+
+    const sigY = Math.max(doc.y, 650);
+    doc.strokeColor("#E5E7EB").lineWidth(1).roundedRect(55, sigY - 10, 485, 75, 6).stroke();
+
+    doc.fillColor("#065F46").fontSize(9).font("Helvetica-Bold").text("OFFICIALLY ISSUED & DIGITALLY VERIFIED BY HR", 65, sigY);
+    doc.fillColor("#6B7280").fontSize(8).font("Helvetica").text(`Document Reference ID: SWIFT-DOC-${Date.now().toString(36).toUpperCase()}`, 65, sigY + 14);
+    doc.fillColor("#111827").fontSize(9.5).font("Helvetica-Bold").text(overrides["{{authorized_signatory_name}}"] || "Dr. K. Anand", 65, sigY + 30);
+    doc.fillColor("#4B5563").fontSize(8.5).font("Helvetica").text(overrides["{{authorized_signatory_designation}}"] || "Head of Human Resources & Operations", 65, sigY + 44);
+
+    doc.fillColor("#059669").fontSize(9).font("Helvetica-Bold").text("✓ DIGITALLY SIGNED", 410, sigY + 25, { align: "right" });
+    doc.fillColor("#9CA3AF").fontSize(7.5).font("Helvetica").text("SwiftHR Enterprise Vault", 410, sigY + 39, { align: "right" });
+
+    doc.end();
+  } catch (err) {
+    console.error("[Documents PDF] Error generating document PDF:", err);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "Failed to generate document PDF: " + err.message });
+    }
+  }
+}
+
+app.get("/api/documents/download-pdf", handleGenerateDocumentPDF);
+app.post("/api/documents/generate-pdf", handleGenerateDocumentPDF);
+
 // App Startup Initializer
 async function startServer() {
   const server = app.listen(PORT, "0.0.0.0", () => {
@@ -2899,3 +4028,4 @@ async function startServer() {
 }
 
 startServer();
+
