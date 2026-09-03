@@ -2877,6 +2877,31 @@ app.post("/api/devices/clear-logs", async (req, res) => {
   res.json({ success: true });
 });
 
+// Query Historical Biometric Punch Logs from DynamoDB
+app.get("/api/biometric/raw-logs", async (req, res) => {
+  const { tenantId, date, serialNumber, employeeId } = req.query;
+  if (!tenantId) return res.status(400).json({ error: "tenantId is required" });
+
+  try {
+    let items = await getTenantItems(COMPANY_TABLES.biometricLogs, tenantId);
+    if (date) {
+      items = items.filter((x) => x.punchDate === date || (x.timestamp && x.timestamp.startsWith(date)));
+    }
+    if (serialNumber && serialNumber !== "ALL") {
+      items = items.filter((x) => x.deviceSerial === serialNumber);
+    }
+    if (employeeId) {
+      items = items.filter((x) => x.employeeId === employeeId || x.empCode === employeeId);
+    }
+    // Sort descending by timestamp
+    items.sort((a, b) => new Date(b.timestamp || b.createdAt).getTime() - new Date(a.timestamp || a.createdAt).getTime());
+
+    res.json({ success: true, count: items.length, logs: items });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Device Management Endpoints
 app.get("/api/devices", async (req, res) => {
   const { tenantId } = req.query;
