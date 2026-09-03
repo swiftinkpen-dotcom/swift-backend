@@ -25,6 +25,10 @@ app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Private-Network", "true");
   next();
 });
+app.use(express.text({
+  type: ["text/*", "application/octet-stream", "*/raw"],
+  limit: "50mb",
+}));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
@@ -363,6 +367,8 @@ const COMPANY_TABLES = {
   roster: "swift_company_roster",
   grievances: "swift_company_grievances",
   requests: "swift_company_requests",
+  devices: "swift_company_devices",
+  biometricLogs: "swift_company_biometric_logs",
 };
 
 // Helper to check and create a composite key table (HASH + RANGE)
@@ -519,7 +525,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
   try {
     const [
       config, employees, attendance, leaves, payrolls,
-      assets, assignments, docLibrary, journeys, notices, docAssets, roles, docRequests, holidays, roster, grievances, requests
+      assets, assignments, docLibrary, journeys, notices, docAssets, roles, docRequests, holidays, roster, grievances, requests, devices
     ] = await Promise.all([
       getTenantItems(COMPANY_TABLES.config, tenantId),
       getTenantItems(COMPANY_TABLES.employees, tenantId),
@@ -538,6 +544,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
       getTenantItems(COMPANY_TABLES.roster, tenantId),
       getTenantItems(COMPANY_TABLES.grievances, tenantId),
       getTenantItems(COMPANY_TABLES.requests, tenantId),
+      getTenantItems(COMPANY_TABLES.devices, tenantId),
     ]);
 
     let companyConfig = config.find((c) => c.id === "config") || null;
@@ -798,6 +805,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
       roster: roster || [],
       grievances: grievances || [],
       requests: requests || [],
+      devices: devices || [],
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1254,8 +1262,8 @@ app.post("/api/requests/act", async (req, res) => {
       title: updatedItem.status === "Approved"
         ? `${updatedItem.workflowName} Approved!`
         : updatedItem.status === "Rejected"
-        ? `${updatedItem.workflowName} Declined`
-        : `${updatedItem.workflowName} Level ${currentLvl} Approved`,
+          ? `${updatedItem.workflowName} Declined`
+          : `${updatedItem.workflowName} Level ${currentLvl} Approved`,
       description: `Your ${updatedItem.workflowName} status is now ${updatedItem.status} by ${actorName || "Management"}${comment ? " · " + comment : ""}.`,
       category: "approval",
       targetEmployeeId: updatedItem.employeeId,
@@ -2304,6 +2312,501 @@ app.post("/api/companies/face-verify", async (req, res) => {
     } else {
       res.json({ success: false, reason: "No registered matching face found in Rekognition collection" });
     }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =========================================================================
+// BIOMAX / ESSL / ZKTECO ADMS PROTOCOL & DYNAMODB BIOMETRIC INGESTION ENGINE
+// =========================================================================
+
+const PUNCH_STATE_MAP = {
+  "0": "CHECK_IN",
+  "1": "CHECK_OUT",
+  "2": "BREAK_OUT",
+  "3": "BREAK_IN",
+  "4": "OVERTIME_IN",
+  "5": "OVERTIME_OUT",
+  "I": "CHECK_IN",
+  "O": "CHECK_OUT",
+  "255": "AUTO",
+};
+
+const VERIFY_TYPE_MAP = {
+  "1": "FINGERPRINT",
+  "2": "PIN_PASSWORD",
+  "3": "CARD_RFID",
+  "4": "FINGER_CARD",
+  "15": "FACE_RECOGNITION",
+  "200": "PALM_VEIN",
+};
+
+function extractDeviceSN(req) {
+  const querySN = req.query.SN || req.query.sn || req.query.SerialNumber || req.query.serialNumber || req.query.serialno || req.query.deviceId || req.query.sn_id;
+  if (querySN) return String(querySN).trim();
+
+  const headerSN = req.headers["x-serial-number"] || req.headers["sn"] || req.headers["serialnumber"] || req.headers["device-sn"] || req.headers["x-sn"];
+  if (headerSN) return String(headerSN).trim();
+
+  if (req.body && typeof req.body === "object") {
+    const bodySN = req.body.SN || req.body.sn || req.body.SerialNumber || req.body.serialNumber || req.body.deviceSerial;
+    if (bodySN) return String(bodySN).trim();
+  }
+
+  if (typeof req.body === "string") {
+    const match = req.body.match(/(?:SN|sn|SerialNumber|~SerialNumber|serialNumber)=([^\s&,\r\n]+)/i);
+    if (match && match[1]) return match[1].trim();
+  }
+
+  return "UNKNOWN";
+}
+
+function parseAdmsPayload(rawBody) {
+  if (!rawBody || typeof rawBody !== "string") return [];
+  const lines = rawBody.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const records = [];
+
+  for (const line of lines) {
+    if (line.startsWith("OPERLOG") || line.startsWith("USER") || line.startsWith("FP") || line.startsWith("OPTIONS")) {
+      continue;
+    }
+
+    if (line.includes("USERID=") || line.includes("CHECKTIME=")) {
+      const parts = line.split("\t");
+      const kv = {};
+      for (const p of parts) {
+        const [k, v] = p.split("=");
+        if (k && v) kv[k.trim().toUpperCase()] = v.trim();
+      }
+      const employeeId = kv["USERID"] || kv["PIN"] || kv["ENROLLID"];
+      const timeStr = kv["CHECKTIME"] || kv["TIME"];
+      if (employeeId && timeStr) {
+        const dateObj = new Date(timeStr.replace(/-/g, "/"));
+        const validDate = !isNaN(dateObj.getTime()) ? dateObj : new Date();
+        records.push({
+          employeeId: String(employeeId),
+          timestamp: validDate,
+          state: PUNCH_STATE_MAP[kv["CHECKTYPE"]] || kv["CHECKTYPE"] || "CHECK_IN",
+          punchType: VERIFY_TYPE_MAP[kv["VERIFYCODE"]] || "FINGERPRINT",
+          rawLine: line,
+        });
+      }
+      continue;
+    }
+
+    const parts = line.includes("\t") ? line.split("\t") : line.split(/\s+/);
+    if (parts.length >= 2) {
+      const employeeId = parts[0]?.trim();
+      let timestampStr = "";
+      let stateCode = "0";
+      let verifyCode = "1";
+
+      if (parts[1] && parts[2] && parts[1].match(/^\d{4}-\d{2}-\d{2}$/)) {
+        timestampStr = `${parts[1]} ${parts[2]}`;
+        stateCode = parts[3] || "0";
+        verifyCode = parts[4] || "1";
+      } else {
+        timestampStr = parts[1]?.trim();
+        stateCode = parts[2]?.trim() || "0";
+        verifyCode = parts[3]?.trim() || "1";
+      }
+
+      const dateObj = new Date(timestampStr.replace(/-/g, "/"));
+      const validDate = !isNaN(dateObj.getTime()) ? dateObj : new Date();
+
+      if (employeeId) {
+        records.push({
+          employeeId: String(employeeId),
+          timestamp: validDate,
+          state: PUNCH_STATE_MAP[stateCode] || stateCode || "CHECK_IN",
+          punchType: VERIFY_TYPE_MAP[verifyCode] || "FINGERPRINT",
+          rawLine: line,
+        });
+      }
+    }
+  }
+  return records;
+}
+
+// Find device & owner tenant across DynamoDB
+async function findDeviceBySerial(serialNumber) {
+  if (!serialNumber || serialNumber === "UNKNOWN") return null;
+  try {
+    const scanRes = await ddb.send(new ScanCommand({
+      TableName: COMPANY_TABLES.devices,
+      FilterExpression: "serialNumber = :sn",
+      ExpressionAttributeValues: { ":sn": serialNumber }
+    }));
+    if (scanRes.Items && scanRes.Items.length > 0) {
+      return scanRes.Items[0];
+    }
+  } catch (err) {
+    console.warn(`[ADMS DynamoDB] findDeviceBySerial scan error:`, err.message);
+  }
+  return null;
+}
+
+// Helper: Process and save a punch into DynamoDB attendance & audit logs
+async function processAndSavePunch({ tenantId, employeeId, timestamp, state, punchType, deviceSerial, rawData }) {
+  const dateObj = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, "0");
+  const day = String(dateObj.getDate()).padStart(2, "0");
+  const dateStr = `${year}-${month}-${day}`;
+  const hours = String(dateObj.getHours()).padStart(2, "0");
+  const minutes = String(dateObj.getMinutes()).padStart(2, "0");
+  const timeStr = `${hours}:${minutes}`;
+
+  // 1. Locate Employee in DynamoDB
+  let emp = null;
+  try {
+    const empScan = await ddb.send(new ScanCommand({
+      TableName: COMPANY_TABLES.employees,
+      FilterExpression: "tenantId = :tid AND (empCode = :eid OR id = :eid OR code = :eid OR biometricPin = :eid)",
+      ExpressionAttributeValues: { ":tid": tenantId, ":eid": String(employeeId) }
+    }));
+    if (empScan.Items && empScan.Items.length > 0) {
+      emp = empScan.Items[0];
+    }
+  } catch (err) {
+    console.warn(`[ADMS Ingestion] Employee scan error for ${employeeId}:`, err.message);
+  }
+
+  const matchedEmpId = emp ? emp.id : String(employeeId);
+  const matchedEmpName = emp ? emp.name : `Employee #${employeeId}`;
+  const matchedEmpCode = emp ? emp.empCode : String(employeeId);
+  const matchedDepartment = emp ? emp.department : "General";
+
+  // 2. Fetch existing daily attendance record
+  const attId = `att-${matchedEmpId}-${dateStr}`;
+  let existingRec = null;
+  try {
+    const getRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.attendance,
+      Key: { tenantId, id: attId }
+    }));
+    existingRec = getRes.Item || null;
+  } catch (err) {
+    console.warn(`[ADMS Ingestion] Get attendance error for ${attId}:`, err.message);
+  }
+
+  // 3. Compute Check-In / Check-Out
+  let checkIn = existingRec?.checkIn || existingRec?.clockIn || null;
+  let checkOut = existingRec?.checkOut || existingRec?.clockOut || null;
+
+  const isCheckOutState = state === "CHECK_OUT" || state === "1" || state === "OVERTIME_OUT";
+  const isCheckInState = state === "CHECK_IN" || state === "0" || state === "OVERTIME_IN";
+
+  if (isCheckOutState) {
+    checkOut = timeStr;
+    if (!checkIn) checkIn = timeStr; // Fallback if no prior punch
+  } else if (isCheckInState) {
+    if (!checkIn) {
+      checkIn = timeStr;
+    } else {
+      // If already clocked in, update checkOut to later time
+      checkOut = timeStr;
+    }
+  } else {
+    // AUTO state
+    if (!checkIn) {
+      checkIn = timeStr;
+    } else {
+      checkOut = timeStr;
+    }
+  }
+
+  // Calculate duration
+  let hoursWorked = 0;
+  if (checkIn && checkOut) {
+    const [inH, inM] = checkIn.split(":").map(Number);
+    const [outH, outM] = checkOut.split(":").map(Number);
+    let diffM = (outH * 60 + outM) - (inH * 60 + inM);
+    if (diffM < 0) diffM += 24 * 60;
+    hoursWorked = Math.round((diffM / 60) * 10) / 10;
+  }
+
+  const updatedAttendanceRecord = {
+    ...(existingRec || {}),
+    id: attId,
+    tenantId,
+    employeeId: matchedEmpId,
+    employeeName: matchedEmpName,
+    empCode: matchedEmpCode,
+    department: matchedDepartment,
+    date: dateStr,
+    status: existingRec?.status === "leave" ? "leave" : "present",
+    checkIn: checkIn,
+    checkOut: checkOut,
+    clockIn: checkIn,
+    clockOut: checkOut,
+    hoursWorked: hoursWorked > 0 ? hoursWorked : (existingRec?.hoursWorked || 0),
+    deviceSerial: deviceSerial || existingRec?.deviceSerial || "BIOMAX-ADMS",
+    punchType: punchType || "FINGERPRINT",
+    source: "BIOMETRIC_TERMINAL",
+    regularized: Boolean(existingRec?.regularized),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await ddb.send(new PutCommand({
+    TableName: COMPANY_TABLES.attendance,
+    Item: updatedAttendanceRecord,
+  }));
+
+  // 4. Save raw immutable biometric log entry for audit trail
+  try {
+    const rawLogId = `punch-${deviceSerial || "terminal"}-${Date.now()}-${matchedEmpId}`;
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.biometricLogs,
+      Item: {
+        id: rawLogId,
+        tenantId,
+        employeeId: matchedEmpId,
+        empCode: matchedEmpCode,
+        deviceSerial: deviceSerial || "UNKNOWN",
+        timestamp: dateObj.toISOString(),
+        punchTime: timeStr,
+        punchDate: dateStr,
+        state: state || "CHECK_IN",
+        punchType: punchType || "FINGERPRINT",
+        rawData: rawData || null,
+        createdAt: new Date().toISOString(),
+      }
+    }));
+  } catch (logErr) {
+    console.warn(`[ADMS Log Audit] Log saving notice:`, logErr.message);
+  }
+
+  return updatedAttendanceRecord;
+}
+
+// ADMS GET /iclock/cdata - Handshake & Heartbeat
+async function handleCDataGet(req, res) {
+  try {
+    const serialNumber = extractDeviceSN(req);
+    const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+    console.log(`📡 [ADMS GET /cdata] Handshake ping from Device SN: ${serialNumber} (IP: ${clientIp})`);
+
+    if (serialNumber && serialNumber !== "UNKNOWN") {
+      let device = await findDeviceBySerial(serialNumber);
+      if (device) {
+        device.lastHeartbeat = new Date().toISOString();
+        device.status = "ONLINE";
+        device.ipAddress = String(clientIp);
+        device.updatedAt = new Date().toISOString();
+        await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.devices, Item: device }));
+      }
+    }
+
+    const responseConfig = [
+      `GET OPTION FROM: ${serialNumber}`,
+      `Stamp=0`,
+      `OpStamp=0`,
+      `PhotoStamp=0`,
+      `ATTLOGStamp=0`,
+      `OPERLOGStamp=0`,
+      `BIODATAStamp=0`,
+      `ErrorDelay=60`,
+      `Delay=10`,
+      `TransInterval=1`,
+      `TransFlag=1111000000`,
+      `TimeZone=330`,
+      `Realtime=1`,
+      `Encrypt=0`,
+      `ServerVersion=3.4.1`,
+      `PushProtVer=2.4.1`,
+      `PushOptionsFlag=1`,
+      `ServerName=SWIFT ADMS Cloud Server`
+    ].join("\n");
+
+    res.set("Content-Type", "text/plain");
+    return res.status(200).send(responseConfig);
+  } catch (error) {
+    console.error("[ADMS GET Error]", error);
+    res.set("Content-Type", "text/plain");
+    return res.status(200).send("OK");
+  }
+}
+
+// ADMS POST /iclock/cdata - Biometric Punch Ingestion
+async function handleCDataPost(req, res) {
+  try {
+    const serialNumber = extractDeviceSN(req);
+    const table = String(req.query.table || req.query.TableName || "ATTLOG").toUpperCase();
+    const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+
+    console.log(`📦 [ADMS POST /cdata] Data push from SN: ${serialNumber} | Table: ${table}`);
+
+    if (table !== "ATTLOG" && table !== "OPERLOG" && table !== "BIODATA") {
+      res.set("Content-Type", "text/plain");
+      return res.status(200).send("OK");
+    }
+
+    // Lookup device to resolve tenantId
+    let device = await findDeviceBySerial(serialNumber);
+    let tenantId = device ? device.tenantId : "company-demo";
+
+    // Auto-update device status
+    if (device) {
+      device.lastHeartbeat = new Date().toISOString();
+      device.status = "ONLINE";
+      device.ipAddress = String(clientIp);
+      await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.devices, Item: device }));
+    }
+
+    const parsedRecords = parseAdmsPayload(rawBody);
+    console.log(`📊 [ADMS Parsed] Extracted ${parsedRecords.length} records for Tenant: ${tenantId}`);
+
+    let savedCount = 0;
+    for (const rec of parsedRecords) {
+      try {
+        await processAndSavePunch({
+          tenantId,
+          employeeId: rec.employeeId,
+          timestamp: rec.timestamp,
+          state: rec.state,
+          punchType: rec.punchType,
+          deviceSerial: serialNumber,
+          rawData: rec.rawLine,
+        });
+        savedCount++;
+      } catch (err) {
+        console.error(`[ADMS Punch Save Error] Emp: ${rec.employeeId}:`, err.message);
+      }
+    }
+
+    res.set("Content-Type", "text/plain");
+    return res.status(200).send(`OK: ${savedCount}`);
+  } catch (error) {
+    console.error("[ADMS POST Error]", error);
+    res.set("Content-Type", "text/plain");
+    return res.status(200).send("OK");
+  }
+}
+
+// ADMS GET /iclock/getrequest - Device Command Polling
+async function handleGetRequest(req, res) {
+  res.set("Content-Type", "text/plain");
+  return res.status(200).send("OK");
+}
+
+// Attach ADMS Endpoints & Root Aliases
+app.get(["/iclock/cdata", "/cdata", "/api/adms/cdata"], handleCDataGet);
+app.post(["/iclock/cdata", "/cdata", "/api/adms/cdata"], handleCDataPost);
+app.get(["/iclock/getrequest", "/getrequest", "/api/adms/getrequest"], handleGetRequest);
+app.post(["/iclock/devicecmd", "/devicecmd"], (req, res) => res.set("Content-Type", "text/plain").send("OK"));
+app.get(["/iclock/ping", "/ping"], (req, res) => res.set("Content-Type", "text/plain").send("OK"));
+
+// Direct REST Punch submission endpoint (for LAN Sync Agent `agent.js` / Hardware Bridge)
+app.post("/api/attendance/punch", async (req, res) => {
+  const { tenantId, employeeId, timestamp, state, punchType, deviceSerial } = req.body;
+  if (!tenantId || !employeeId) {
+    return res.status(400).json({ error: "Missing required params: tenantId, employeeId" });
+  }
+
+  try {
+    const record = await processAndSavePunch({
+      tenantId,
+      employeeId,
+      timestamp: timestamp || new Date(),
+      state: state || "CHECK_IN",
+      punchType: punchType || "FINGERPRINT",
+      deviceSerial: deviceSerial || "LAN-AGENT",
+      rawData: JSON.stringify(req.body),
+    });
+    res.json({ success: true, record });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Built-in Biometric Hardware Simulator Endpoint
+app.post("/api/adms/simulate", async (req, res) => {
+  const { tenantId, employeeId, deviceSerial, punchState, punchType, timeStr } = req.body;
+  if (!tenantId || !employeeId) {
+    return res.status(400).json({ error: "Missing required params: tenantId, employeeId" });
+  }
+
+  try {
+    let now = new Date();
+    if (timeStr) {
+      const [h, m] = timeStr.split(":").map(Number);
+      now.setHours(h, m, 0, 0);
+    }
+    const record = await processAndSavePunch({
+      tenantId,
+      employeeId,
+      timestamp: now,
+      state: punchState || "CHECK_IN",
+      punchType: punchType || "FINGERPRINT",
+      deviceSerial: deviceSerial || "SIMULATOR-001",
+      rawData: `SIMULATED_PUNCH\t${employeeId}\t${now.toISOString()}`,
+    });
+    res.json({ success: true, record });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Device Management Endpoints
+app.get("/api/devices", async (req, res) => {
+  const { tenantId } = req.query;
+  if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+  try {
+    const devices = await getTenantItems(COMPANY_TABLES.devices, tenantId);
+    res.json({ success: true, devices });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/devices/register", async (req, res) => {
+  const { tenantId, device } = req.body;
+  if (!tenantId || !device || !device.serialNumber) {
+    return res.status(400).json({ error: "Missing required params: tenantId, device.serialNumber" });
+  }
+
+  try {
+    const devId = device.id || `dev-${device.serialNumber.trim()}`;
+    const newDevice = {
+      id: devId,
+      tenantId,
+      serialNumber: device.serialNumber.trim(),
+      name: device.name || `Biometric Terminal (${device.serialNumber})`,
+      branchId: device.branchId || "br-hq",
+      model: device.model || "BioMax / eSSL ADMS",
+      status: device.status || "ONLINE",
+      ipAddress: device.ipAddress || "127.0.0.1",
+      lastHeartbeat: new Date().toISOString(),
+      createdAt: device.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.devices,
+      Item: newDevice,
+    }));
+
+    res.json({ success: true, device: newDevice });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/devices/delete", async (req, res) => {
+  const { tenantId, id } = req.body;
+  if (!tenantId || !id) {
+    return res.status(400).json({ error: "Missing required params: tenantId, id" });
+  }
+
+  try {
+    await ddb.send(new DeleteCommand({
+      TableName: COMPANY_TABLES.devices,
+      Key: { tenantId, id }
+    }));
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -4014,6 +4517,324 @@ For {{company_name}}
 app.get("/api/documents/download-pdf", handleGenerateDocumentPDF);
 app.post("/api/documents/generate-pdf", handleGenerateDocumentPDF);
 
+// ==========================================
+// AUTOMATED 10:00 PM MISSED CHECKOUT & EMAIL SCHEDULER
+// ==========================================
+let lastAutoCloseDate = "";
+
+async function sendDailyAttendanceEmail({
+  to,
+  employeeName,
+  empCode,
+  date,
+  clockIn,
+  clockOut,
+  status,
+  hoursWorked,
+  lateBy,
+  earlyOutBy,
+  autoCloseReason,
+  companyName = "SwiftHR Enterprise",
+}) {
+  if (!to || !to.includes("@")) {
+    console.warn(`[AttendanceEmail] Skipped: No valid email address provided for ${employeeName || empCode}`);
+    return { skipped: true, reason: "No email provided" };
+  }
+
+  const safeEmpName = employeeName || "Employee";
+  const safeEmpCode = empCode || "N/A";
+  const safeDate = date || new Date().toISOString().split("T")[0];
+  const safeIn = clockIn || "--:--";
+  const safeOut = clockOut || "--:--";
+  const safeComp = companyName || "SwiftHR Enterprise";
+
+  const isHalfDay = status === "halfday" || status === "half-day";
+  const isAbsent = status === "absent";
+  const isPresent = status === "present";
+
+  const statusLabel = isPresent
+    ? "🟢 Present (Full Day)"
+    : isHalfDay
+      ? (autoCloseReason?.includes("10:00 PM") ? "🟠 Half-Day (Forgot Checkout - Auto Closed)" : "🟠 Half-Day")
+      : isAbsent
+        ? "🔴 Absent"
+        : "Attendance Log";
+
+  const statusColor = isPresent ? "#16a34a" : isHalfDay ? "#ea580c" : "#dc2626";
+  const statusBg = isPresent ? "#f0fdf4" : isHalfDay ? "#fff7ed" : "#fef2f2";
+  const statusBorder = isPresent ? "#86efac" : isHalfDay ? "#fdba74" : "#fca5a5";
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Daily Attendance Log - ${safeDate}</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 24px 12px; }
+        .container { max-width: 580px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05); }
+        .header { background: linear-gradient(135deg, #0f172a, #1e293b); padding: 28px 24px; text-align: center; color: #ffffff; }
+        .header h1 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.3px; }
+        .header p { margin: 6px 0 0; opacity: 0.85; font-size: 13px; font-weight: 500; }
+        .content { padding: 26px 24px; }
+        .greeting { font-size: 16px; font-weight: 700; margin-bottom: 12px; color: #0f172a; }
+        .lead { font-size: 13.5px; line-height: 1.6; color: #475569; margin-bottom: 20px; }
+        .status-badge-card { background: ${statusBg}; border: 1px solid ${statusBorder}; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; text-align: center; }
+        .status-badge-title { font-size: 15px; font-weight: 900; color: ${statusColor}; }
+        .status-badge-sub { font-size: 12px; color: #64748b; margin-top: 4px; }
+        .details-grid { width: 100%; border-collapse: collapse; margin-bottom: 22px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; }
+        .details-grid td { padding: 12px 16px; border-bottom: 1px solid #edf2f7; font-size: 13px; }
+        .details-grid tr:last-child td { border-bottom: none; }
+        .label-col { color: #64748b; font-weight: 600; width: 40%; }
+        .val-col { font-weight: 700; color: #0f172a; }
+        .notice-card { background: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 8px; padding: 12px 14px; margin-bottom: 20px; font-size: 12.5px; color: #92400e; line-height: 1.5; }
+        .footer { padding: 18px 24px; background: #f8fafc; text-align: center; font-size: 11.5px; color: #94a3b8; border-top: 1px solid #e2e8f0; line-height: 1.5; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>${safeComp}</h1>
+          <p>Daily Attendance & Punch Summary • ${safeDate}</p>
+        </div>
+        <div class="content">
+          <div class="greeting">Hi ${safeEmpName},</div>
+          <p class="lead">
+            Here is your verified daily attendance summary and biometric punch record for <strong>${safeDate}</strong>.
+          </p>
+
+          <div class="status-badge-card">
+            <div class="status-badge-title">${statusLabel}</div>
+            <div class="status-badge-sub">${autoCloseReason || "Session finalized as per company attendance policy."}</div>
+          </div>
+
+          <table class="details-grid">
+            <tr>
+              <td class="label-col">Employee Name:</td>
+              <td class="val-col">${safeEmpName} (${safeEmpCode})</td>
+            </tr>
+            <tr>
+              <td class="label-col">Date:</td>
+              <td class="val-col">${safeDate}</td>
+            </tr>
+            <tr>
+              <td class="label-col">Punch In Time:</td>
+              <td class="val-col">${safeIn} ${lateBy ? `<span style="color:#ea580c; font-size:11px;">(Late by ${lateBy}m)</span>` : `<span style="color:#16a34a; font-size:11px;">✓ On-Time</span>`}</td>
+            </tr>
+            <tr>
+              <td class="label-col">Punch Out Time:</td>
+              <td class="val-col">${safeOut} ${earlyOutBy ? `<span style="color:#ea580c; font-size:11px;">(Early by ${earlyOutBy}m)</span>` : ""}</td>
+            </tr>
+            ${hoursWorked ? `
+            <tr>
+              <td class="label-col">Effective Work Hours:</td>
+              <td class="val-col" style="color:#16a34a;">${hoursWorked} Hours</td>
+            </tr>` : ""}
+            <tr>
+              <td class="label-col">Verification Method:</td>
+              <td class="val-col" style="color:#2563eb;">✅ Face Biometric & Geofence</td>
+            </tr>
+          </table>
+
+          ${autoCloseReason ? `
+          <div class="notice-card">
+            <strong>⚠️ Policy Notice:</strong> ${autoCloseReason}
+            <div style="margin-top:6px; font-size:11.5px; color:#78350f;">
+              If you forgot to punch out due to unavoidable circumstances or outdoor duty, you can submit an <strong>Attendance Regularization Ticket</strong> in the SwiftHR mobile app for approval by your reporting manager.
+            </div>
+          </div>` : ""}
+
+          <p style="font-size: 12px; color: #64748b; line-height: 1.5; margin: 0;">
+            Track your real-time monthly timesheet, leaves, and payslips anytime via the <strong>SwiftHR Mobile App</strong>.
+          </p>
+        </div>
+        <div class="footer">
+          This is an automated attendance dispatch from ${safeComp} Attendance Engine.<br />
+          Please do not reply directly to this automated email.
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  try {
+    const info = await emailTransporter.sendMail({
+      from: `"${safeComp}" <${process.env.SMTP_USER || "no-reply@swifthr.shop"}>`,
+      to,
+      subject: `[Attendance Report] ${safeDate} • ${safeEmpName} - ${statusLabel.replace(/[🟢🟠🔴]/g, "").trim()}`,
+      html,
+    });
+    console.log(`[AttendanceEmail] Successfully sent report to ${to} (${safeEmpName}) - MessageId: ${info.messageId}`);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error(`[AttendanceEmail] Failed to send report to ${to}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function autoCloseMissedCheckouts() {
+  console.log(`[Auto-Checkout Cron] Running 10:00 PM auto-closure & email dispatch routine for attendance sessions...`);
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+  try {
+    const [attScan, empScan, confScan] = await Promise.all([
+      ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.attendance })),
+      ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.employees })),
+      ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.config })),
+    ]);
+
+    const allRecords = attScan.Items || [];
+    const allEmployees = empScan.Items || [];
+    const allConfigs = confScan.Items || [];
+
+    let updatedCount = 0;
+    let emailsSent = 0;
+
+    // Build employee lookup
+    const empMap = new Map();
+    for (const emp of allEmployees) {
+      if (emp.id) empMap.set(emp.id, emp);
+      if (emp.empCode) empMap.set(emp.empCode, emp);
+    }
+
+    const configMap = new Map();
+    for (const conf of allConfigs) {
+      if (conf.tenantId) configMap.set(conf.tenantId, conf);
+    }
+
+    for (const rec of allRecords) {
+      const hasClockIn = Boolean(rec.clockIn || rec.checkIn);
+      const hasClockOut = Boolean(rec.clockOut || rec.checkOut);
+      const isTodayOrPast = rec.date <= todayStr;
+
+      if (hasClockIn && isTodayOrPast) {
+        let finalRec = rec;
+
+        // Auto-close if clockOut is missing
+        if (!hasClockOut) {
+          const isAlreadyLate = rec.status === "late" || rec.punctuality === "late";
+          const newStatus = isAlreadyLate ? "absent" : "halfday";
+
+          finalRec = {
+            ...rec,
+            status: newStatus,
+            clockOut: "22:00",
+            checkOut: "22:00",
+            isAutoClosed: true,
+            isMissedCheckout: true,
+            autoCloseReason: "Forgot Check-out (Auto-closed at 10:00 PM cutoff as Half-Day)",
+            autoClosedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+
+          await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.attendance, Item: finalRec }));
+          updatedCount++;
+          console.log(`[Auto-Checkout Cron] Auto-closed attendance for ${rec.employeeName || rec.employeeId} (${rec.date}) -> Status: ${newStatus}`);
+        }
+
+        // Send Daily Attendance Email Report if date matches today and not already emailed
+        if (rec.date === todayStr && !rec.dailyEmailSent) {
+          const emp = empMap.get(rec.employeeId) || empMap.get(rec.empCode);
+          const empEmail = emp?.email || emp?.workEmail || emp?.personalEmail;
+          const compConf = configMap.get(rec.tenantId);
+          const compName = compConf?.name || compConf?.legalName || "SwiftHR Enterprise";
+
+          if (empEmail && empEmail.includes("@")) {
+            const emailRes = await sendDailyAttendanceEmail({
+              to: empEmail,
+              employeeName: rec.employeeName || emp?.name,
+              empCode: rec.empCode || emp?.empCode,
+              date: rec.date,
+              clockIn: finalRec.clockIn || finalRec.checkIn,
+              clockOut: finalRec.clockOut || finalRec.checkOut,
+              status: finalRec.status,
+              hoursWorked: finalRec.hoursWorked,
+              lateBy: finalRec.lateBy,
+              earlyOutBy: finalRec.earlyOutBy,
+              autoCloseReason: finalRec.autoCloseReason,
+              companyName: compName,
+            });
+
+            if (emailRes?.success) {
+              emailsSent++;
+              finalRec.dailyEmailSent = true;
+              finalRec.dailyEmailSentAt = new Date().toISOString();
+              await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.attendance, Item: finalRec }));
+            }
+          }
+        }
+      }
+    }
+
+    lastAutoCloseDate = todayStr;
+    console.log(`[Auto-Checkout Cron] Completed. Auto-closed ${updatedCount} record(s), sent ${emailsSent} daily attendance report email(s).`);
+    return { success: true, updatedCount, emailsSent, date: todayStr };
+  } catch (err) {
+    console.error(`[Auto-Checkout Cron] Error processing missed checkouts & emails:`, err);
+    return { success: false, error: err.message };
+  }
+}
+
+// Background Cron Scheduler (Runs every minute to check for 10:00 PM local time)
+function startAutoCheckoutScheduler() {
+  setInterval(async () => {
+    const now = new Date();
+    // Check IST / local hour and minute (10:00 PM = 22:00)
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+    if (hours === 22 && minutes === 0 && lastAutoCloseDate !== todayStr) {
+      console.log(`[Auto-Checkout Cron] Triggering scheduled 10:00 PM job for date: ${todayStr}`);
+      await autoCloseMissedCheckouts();
+    }
+  }, 60 * 1000);
+}
+
+// API Endpoints for Manual or Cloud-Scheduled Trigger
+app.post("/api/attendance/auto-close-missed-checkouts", async (req, res) => {
+  try {
+    const result = await autoCloseMissedCheckouts();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/attendance/send-daily-log-email", async (req, res) => {
+  try {
+    const { to, employeeName, empCode, date, clockIn, clockOut, status, hoursWorked, lateBy, earlyOutBy, autoCloseReason, companyName } = req.body;
+    const result = await sendDailyAttendanceEmail({
+      to,
+      employeeName,
+      empCode,
+      date,
+      clockIn,
+      clockOut,
+      status,
+      hoursWorked,
+      lateBy,
+      earlyOutBy,
+      autoCloseReason,
+      companyName,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/attendance/auto-close-missed-checkouts/status", (req, res) => {
+  res.json({
+    active: true,
+    scheduledTime: "22:00 (10:00 PM)",
+    lastRunDate: lastAutoCloseDate || "None yet today",
+    currentTime: new Date().toLocaleTimeString(),
+  });
+});
+
 // App Startup Initializer
 async function startServer() {
   const server = app.listen(PORT, "0.0.0.0", () => {
@@ -4022,10 +4843,13 @@ async function startServer() {
 
   try {
     await initDB();
+    startAutoCheckoutScheduler();
+    console.log("[Server] 10:00 PM Auto-Checkout daily scheduler activated.");
   } catch (err) {
     console.error("[Server] Database initialization warning:", err?.message || err);
   }
 }
 
 startServer();
+
 
