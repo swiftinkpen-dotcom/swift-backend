@@ -2342,6 +2342,23 @@ const VERIFY_TYPE_MAP = {
   "200": "PALM_VEIN",
 };
 
+// In-Memory Live Biometric Hardware Logs Ring Buffer (Last 250 requests)
+const LIVE_BIOMETRIC_REQUEST_LOGS = [];
+const MAX_LIVE_LOGS = 250;
+
+function recordLiveBiometricLog(entry) {
+  const logItem = {
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  LIVE_BIOMETRIC_REQUEST_LOGS.unshift(logItem);
+  if (LIVE_BIOMETRIC_REQUEST_LOGS.length > MAX_LIVE_LOGS) {
+    LIVE_BIOMETRIC_REQUEST_LOGS.length = MAX_LIVE_LOGS;
+  }
+  return logItem;
+}
+
 function extractDeviceSN(req) {
   const querySN = req.query.SN || req.query.sn || req.query.SerialNumber || req.query.serialNumber || req.query.serialno || req.query.deviceId || req.query.sn_id;
   if (querySN) return String(querySN).trim();
@@ -2588,9 +2605,11 @@ async function handleCDataGet(req, res) {
     const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
     console.log(`📡 [ADMS GET /cdata] Handshake ping from Device SN: ${serialNumber} (IP: ${clientIp})`);
 
+    let matchedTenant = "ALL";
     if (serialNumber && serialNumber !== "UNKNOWN") {
       let device = await findDeviceBySerial(serialNumber);
       if (device) {
+        matchedTenant = device.tenantId || "ALL";
         device.lastHeartbeat = new Date().toISOString();
         device.status = "ONLINE";
         device.ipAddress = String(clientIp);
@@ -2598,6 +2617,18 @@ async function handleCDataGet(req, res) {
         await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.devices, Item: device }));
       }
     }
+
+    recordLiveBiometricLog({
+      tenantId: matchedTenant,
+      serialNumber,
+      clientIp: String(clientIp),
+      method: "GET",
+      path: req.originalUrl || req.url,
+      type: "HEARTBEAT",
+      status: "200 OK",
+      details: `Handshake Ping / Heartbeat from Device SN: ${serialNumber}`,
+      rawPayload: null,
+    });
 
     const responseConfig = [
       `GET OPTION FROM: ${serialNumber}`,
@@ -2640,6 +2671,17 @@ async function handleCDataPost(req, res) {
     console.log(`📦 [ADMS POST /cdata] Data push from SN: ${serialNumber} | Table: ${table}`);
 
     if (table !== "ATTLOG" && table !== "OPERLOG" && table !== "BIODATA") {
+      recordLiveBiometricLog({
+        tenantId: "ALL",
+        serialNumber,
+        clientIp: String(clientIp),
+        method: "POST",
+        path: req.originalUrl || req.url,
+        type: "DEVICE_EVENT",
+        status: "200 OK",
+        details: `Non-ATTLOG Table Notification (${table})`,
+        rawPayload: typeof rawBody === "string" ? rawBody.slice(0, 500) : null,
+      });
       res.set("Content-Type", "text/plain");
       return res.status(200).send("OK");
     }
@@ -2677,10 +2719,33 @@ async function handleCDataPost(req, res) {
       }
     }
 
+    recordLiveBiometricLog({
+      tenantId,
+      serialNumber,
+      clientIp: String(clientIp),
+      method: "POST",
+      path: req.originalUrl || req.url,
+      type: "PUNCH_PUSH",
+      status: `200 OK (${savedCount} saved)`,
+      details: `Pushed ${parsedRecords.length} record(s), successfully registered ${savedCount} punch(es) to DynamoDB`,
+      rawPayload: typeof rawBody === "string" ? rawBody.slice(0, 1000) : null,
+    });
+
     res.set("Content-Type", "text/plain");
     return res.status(200).send(`OK: ${savedCount}`);
   } catch (error) {
     console.error("[ADMS POST Error]", error);
+    recordLiveBiometricLog({
+      tenantId: "ALL",
+      serialNumber: "ERROR",
+      clientIp: "127.0.0.1",
+      method: "POST",
+      path: req.originalUrl || req.url,
+      type: "ERROR",
+      status: "500 Error",
+      details: error.message,
+      rawPayload: null,
+    });
     res.set("Content-Type", "text/plain");
     return res.status(200).send("OK");
   }
@@ -2688,6 +2753,19 @@ async function handleCDataPost(req, res) {
 
 // ADMS GET /iclock/getrequest - Device Command Polling
 async function handleGetRequest(req, res) {
+  const serialNumber = extractDeviceSN(req);
+  const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+  recordLiveBiometricLog({
+    tenantId: "ALL",
+    serialNumber,
+    clientIp: String(clientIp),
+    method: "GET",
+    path: req.originalUrl || req.url,
+    type: "COMMAND_POLL",
+    status: "200 OK",
+    details: `Device Polling for pending remote commands`,
+    rawPayload: null,
+  });
   res.set("Content-Type", "text/plain");
   return res.status(200).send("OK");
 }
@@ -2716,6 +2794,19 @@ app.post("/api/attendance/punch", async (req, res) => {
       deviceSerial: deviceSerial || "LAN-AGENT",
       rawData: JSON.stringify(req.body),
     });
+
+    recordLiveBiometricLog({
+      tenantId,
+      serialNumber: deviceSerial || "LAN-AGENT",
+      clientIp: req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1",
+      method: "POST",
+      path: "/api/attendance/punch",
+      type: "REST_PUNCH",
+      status: "200 OK",
+      details: `LAN Agent Punch: Emp #${employeeId} (${record.employeeName || 'Matched'}) | State: ${state || 'CHECK_IN'}`,
+      rawPayload: JSON.stringify(req.body),
+    });
+
     res.json({ success: true, record });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2744,10 +2835,46 @@ app.post("/api/adms/simulate", async (req, res) => {
       deviceSerial: deviceSerial || "SIMULATOR-001",
       rawData: `SIMULATED_PUNCH\t${employeeId}\t${now.toISOString()}`,
     });
+
+    recordLiveBiometricLog({
+      tenantId,
+      serialNumber: deviceSerial || "SIMULATOR-001",
+      clientIp: req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1",
+      method: "POST",
+      path: "/api/adms/simulate",
+      type: "SIMULATION",
+      status: "200 OK",
+      details: `Simulated Hardware Punch: Emp #${employeeId} (${record.employeeName}) | State: ${punchState || 'CHECK_IN'}`,
+      rawPayload: JSON.stringify(req.body),
+    });
+
     res.json({ success: true, record });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// Live Biometric Hardware Logs Stream API
+app.get("/api/devices/live-logs", async (req, res) => {
+  const { tenantId, serialNumber, limit = 100 } = req.query;
+  let filtered = LIVE_BIOMETRIC_REQUEST_LOGS;
+  if (tenantId && tenantId !== "ALL") {
+    filtered = filtered.filter(l => !l.tenantId || l.tenantId === "ALL" || l.tenantId === tenantId);
+  }
+  if (serialNumber && serialNumber !== "ALL") {
+    filtered = filtered.filter(l => l.serialNumber === serialNumber);
+  }
+  res.json({
+    success: true,
+    count: filtered.length,
+    logs: filtered.slice(0, Number(limit) || 100),
+    serverTime: new Date().toISOString(),
+  });
+});
+
+app.post("/api/devices/clear-logs", async (req, res) => {
+  LIVE_BIOMETRIC_REQUEST_LOGS.length = 0;
+  res.json({ success: true });
 });
 
 // Device Management Endpoints
