@@ -20,7 +20,20 @@ app.use(
     origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "ngrok-skip-browser-warning", "x-tenant-id", "x-company-id"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "ngrok-skip-browser-warning",
+      "x-tenant-id",
+      "x-company-id",
+      "Cache-Control",
+      "Pragma",
+      "Expires",
+      "x-requested-with",
+      "x-serial-number",
+      "sn",
+      "x-forwarded-for",
+    ],
   })
 );
 app.use((req, res, next) => {
