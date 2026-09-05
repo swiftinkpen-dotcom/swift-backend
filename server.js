@@ -32,6 +32,10 @@ app.use(express.text({
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+// BioMax / eSSL / ZKTeco ADMS & Attendance Cloud Engine
+const biometricRoutes = require("./routes/biometricRoutes");
+app.use(biometricRoutes);
+
 const PORT = process.env.PORT || 5000;
 
 const credentials = {
