@@ -978,7 +978,20 @@ app.post("/api/requests/submit", async (req, res) => {
         },
       ];
 
-      if (category === "loan" || category === "advance_loan") {
+      if (category === "profile" || category === "profile_update") {
+        approvalSteps = [
+          {
+            id: `step-1-${Date.now()}`,
+            level: 1,
+            approverName: "HR / Admin",
+            roleName: "HR & Admin Direct Authorization",
+            department: "Human Resources",
+            permission: "approve_only",
+            embedSignature: true,
+            status: "Pending",
+          },
+        ];
+      } else if (category === "loan" || category === "advance_loan") {
         approvalSteps.push({
           id: `step-3-${Date.now()}`,
           level: 3,
@@ -1258,6 +1271,28 @@ app.post("/api/requests/act", async (req, res) => {
         }
       } catch (empErr) {
         console.warn("[CompOff Auto-Present / Credit Error]:", empErr.message);
+      }
+    }
+
+    // If final approved and category is profile: automatically apply all profile updates to the employee record
+    if (updatedItem.status === "Approved" && updatedItem.category === "profile" && updatedItem.metadata?.profileUpdates) {
+      try {
+        const empRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.employees,
+          Key: { tenantId, id: updatedItem.employeeId },
+        }));
+        const emp = empRes.Item;
+        if (emp) {
+          const mergedEmp = {
+            ...emp,
+            ...updatedItem.metadata.profileUpdates,
+            updatedAt: now,
+          };
+          await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.employees, Item: mergedEmp }));
+          console.log(`[Profile Update Approved] Successfully applied approved profile fields to employee ${emp.name} (${emp.id})`);
+        }
+      } catch (profErr) {
+        console.warn("[Profile Auto-Apply Error]:", profErr.message);
       }
     }
 
@@ -2481,14 +2516,47 @@ async function processAndSavePunch({ tenantId, employeeId, timestamp, state, pun
 
   // 1. Locate Employee in DynamoDB
   let emp = null;
+  const cleanEmpCode = String(employeeId).trim().toLowerCase();
+  const cleanDeviceSn = deviceSerial ? String(deviceSerial).trim().toLowerCase() : null;
+
   try {
     const empScan = await ddb.send(new ScanCommand({
       TableName: COMPANY_TABLES.employees,
-      FilterExpression: "tenantId = :tid AND (empCode = :eid OR id = :eid OR code = :eid OR biometricPin = :eid)",
-      ExpressionAttributeValues: { ":tid": tenantId, ":eid": String(employeeId) }
+      FilterExpression: "tenantId = :tid",
+      ExpressionAttributeValues: { ":tid": tenantId }
     }));
     if (empScan.Items && empScan.Items.length > 0) {
-      emp = empScan.Items[0];
+      // 1a. Match biometricMappings with Device SN
+      if (cleanDeviceSn) {
+        emp = empScan.Items.find((item) => {
+          if (item.biometricMappings && Array.isArray(item.biometricMappings)) {
+            return item.biometricMappings.some((m) => {
+              const codeMatch = String(m.biometricEmpCode || "").trim().toLowerCase() === cleanEmpCode;
+              const snMatch = !m.deviceSn || String(m.deviceSn || "").trim().toLowerCase() === cleanDeviceSn;
+              return codeMatch && snMatch;
+            });
+          }
+          return false;
+        });
+      }
+
+      // 1b. Match biometricMappings by biometricEmpCode only
+      if (!emp) {
+        emp = empScan.Items.find((item) => {
+          if (item.biometricMappings && Array.isArray(item.biometricMappings)) {
+            return item.biometricMappings.some((m) => String(m.biometricEmpCode || "").trim().toLowerCase() === cleanEmpCode);
+          }
+          return false;
+        });
+      }
+
+      // 1c. Match direct empCode, code, id, biometricPin
+      if (!emp) {
+        emp = empScan.Items.find((item) => {
+          const c = String(item.empCode || item.code || item.id || item.biometricPin || "").trim().toLowerCase();
+          return c === cleanEmpCode;
+        });
+      }
     }
   } catch (err) {
     console.warn(`[ADMS Ingestion] Employee scan error for ${employeeId}:`, err.message);
@@ -4842,7 +4910,8 @@ async function sendDailyAttendanceEmail({
   const safeEmpCode = empCode || "N/A";
   const safeDate = date || new Date().toISOString().split("T")[0];
   const safeIn = clockIn || "--:--";
-  const safeOut = clockOut || "--:--";
+  const isMissedOut = !clockOut || clockOut === "--:--" || (clockOut === "22:00" && Boolean(autoCloseReason));
+  const safeOut = isMissedOut ? "Not Marked (Missed Check-Out)" : clockOut;
   const safeComp = companyName || "SwiftHR Enterprise";
 
   const isHalfDay = status === "halfday" || status === "half-day";
@@ -4852,9 +4921,9 @@ async function sendDailyAttendanceEmail({
   const statusLabel = isPresent
     ? "🟢 Present (Full Day)"
     : isHalfDay
-      ? (autoCloseReason?.includes("10:00 PM") ? "🟠 Half-Day (Forgot Checkout - Auto Closed)" : "🟠 Half-Day")
+      ? "🟠 Half-Day (Forgot Check-out Marked as Half-Day Absent)"
       : isAbsent
-        ? "🔴 Absent"
+        ? (isMissedOut ? "🔴 Absent (Late In + Missed Check-out)" : "🔴 Absent")
         : "Attendance Log";
 
   const statusColor = isPresent ? "#16a34a" : isHalfDay ? "#ea580c" : "#dc2626";
@@ -5003,28 +5072,34 @@ async function autoCloseMissedCheckouts() {
 
     for (const rec of allRecords) {
       const hasClockIn = Boolean(rec.clockIn || rec.checkIn);
-      const hasClockOut = Boolean(rec.clockOut || rec.checkOut);
+      // If record was previously auto-closed with synthetic "22:00", treat it as missed checkout
+      const isSynthetic22 = (rec.clockOut === "22:00" || rec.checkOut === "22:00") && (rec.isAutoClosed || rec.isMissedCheckout || rec.autoCloseReason);
+      const hasClockOut = Boolean(rec.clockOut || rec.checkOut) && !isSynthetic22;
       const isTodayOrPast = rec.date <= todayStr;
 
       if (hasClockIn && isTodayOrPast) {
         let finalRec = rec;
 
-        // Auto-close if clockOut is missing
-        if (!hasClockOut) {
-          const isAlreadyLate = rec.status === "late" || rec.punctuality === "late";
+        // Auto-close if clockOut is missing or if it was previously saved as synthetic 22:00
+        if (!hasClockOut || isSynthetic22) {
+          const isAlreadyLate = rec.status === "late" || rec.punctuality === "late" || (rec.lateBy && rec.lateBy > 0);
           const newStatus = isAlreadyLate ? "absent" : "halfday";
 
           finalRec = {
             ...rec,
             status: newStatus,
-            clockOut: "22:00",
-            checkOut: "22:00",
             isAutoClosed: true,
             isMissedCheckout: true,
-            autoCloseReason: "Forgot Check-out (Auto-closed at 10:00 PM cutoff as Half-Day)",
+            autoCloseReason: isAlreadyLate
+              ? "Forgot Check-out (Late In + Missed Check-Out = Marked Absent)"
+              : "Forgot Check-out (Missed Check-Out punch marked as Half-Day Absent)",
             autoClosedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
+
+          // Explicitly delete fake checkout time
+          delete finalRec.clockOut;
+          delete finalRec.checkOut;
 
           await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.attendance, Item: finalRec }));
           updatedCount++;
@@ -5134,8 +5209,8 @@ app.get("/api/attendance/auto-close-missed-checkouts/status", (req, res) => {
 
 // App Startup Initializer
 async function startServer() {
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Server] Super Admin backend API running at http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, () => {
+    console.log(`[Server] Super Admin backend API running at http://localhost:${PORT}`);
   });
 
   try {

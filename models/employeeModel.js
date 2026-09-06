@@ -23,20 +23,47 @@ class EmployeeModel {
   }
 
   /**
-   * Finds an employee by employee code within a tenant
+   * Finds an employee by employee code or biometric mapping within a tenant
    * @param {string} tenantId - Company tenant identifier
    * @param {string} empCode - Employee code / device user ID
+   * @param {string} [deviceSn] - Optional device serial number to match specific mapping
    * @returns {Promise<object|null>}
    */
-  static async findByEmpCode(tenantId, empCode) {
+  static async findByEmpCode(tenantId, empCode, deviceSn = null) {
     if (!tenantId || !empCode) return null;
-    const cleanCode = String(empCode).trim();
+    const cleanCode = String(empCode).trim().toLowerCase();
+    const cleanSn = deviceSn ? String(deviceSn).trim().toLowerCase() : null;
 
     try {
       const items = await this.listByTenant(tenantId);
+      // 1. Match biometricMappings with Device SN
+      if (cleanSn) {
+        const bioMatch = items.find((emp) => {
+          if (emp.biometricMappings && Array.isArray(emp.biometricMappings)) {
+            return emp.biometricMappings.some((m) => {
+              const codeMatch = String(m.biometricEmpCode || "").trim().toLowerCase() === cleanCode;
+              const snMatch = !m.deviceSn || String(m.deviceSn || "").trim().toLowerCase() === cleanSn;
+              return codeMatch && snMatch;
+            });
+          }
+          return false;
+        });
+        if (bioMatch) return bioMatch;
+      }
+
+      // 2. Match biometricMappings without Device SN
+      const bioAnyMatch = items.find((emp) => {
+        if (emp.biometricMappings && Array.isArray(emp.biometricMappings)) {
+          return emp.biometricMappings.some((m) => String(m.biometricEmpCode || "").trim().toLowerCase() === cleanCode);
+        }
+        return false;
+      });
+      if (bioAnyMatch) return bioAnyMatch;
+
+      // 3. Fallback to direct empCode, code, id, employeeId, biometricPin
       const match = items.find((emp) => {
-        const c = String(emp.empCode || emp.code || emp.employeeId || emp.id || "").trim().toLowerCase();
-        return c === cleanCode.toLowerCase();
+        const c = String(emp.empCode || emp.code || emp.employeeId || emp.id || emp.biometricPin || "").trim().toLowerCase();
+        return c === cleanCode;
       });
       return match || null;
     } catch (err) {
