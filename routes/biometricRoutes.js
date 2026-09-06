@@ -6,6 +6,14 @@ const AttendanceModel = require("../models/attendanceModel");
 const CompanyModel = require("../models/companyModel");
 const AdmsService = require("../models/admsService");
 
+// Disable HTTP caching so clients always get fresh DynamoDB state
+router.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
 /**
  * ============================================================================
  * 1. BioMax / eSSL / ZKTeco ADMS Cloud Protocol Endpoints

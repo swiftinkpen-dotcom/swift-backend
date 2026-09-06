@@ -13,16 +13,34 @@ const openai = new OpenAI({
 });
 
 const app = express();
+app.set("etag", false);
+
 app.use(
   cors({
     origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "ngrok-skip-browser-warning", "x-tenant-id", "x-company-id"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "ngrok-skip-browser-warning",
+      "x-tenant-id",
+      "x-company-id",
+      "Cache-Control",
+      "Pragma",
+      "Expires",
+      "x-requested-with",
+      "x-serial-number",
+      "sn",
+      "x-forwarded-for",
+    ],
   })
 );
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Private-Network", "true");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
   next();
 });
 app.use(express.text({
