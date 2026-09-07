@@ -1437,7 +1437,9 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
       const wd = company.workingDaysPerMonth || 26;
       const userLogs = attendance.filter((a) => (a.employeeId === employee?.id || a.employeeName === employee?.name) && a.date && a.date.startsWith(monthStr));
       const presentDays = userLogs.filter((a) => a.status === "present").length;
-      daysWorked = userLogs.length > 0 ? presentDays : wd;
+      const halfDays = userLogs.filter((a) => a.status === "half-day").length;
+      const leaveDays = userLogs.filter((a) => a.status === "leave").length;
+      daysWorked = presentDays + halfDays * 0.5 + leaveDays;
       const prorateFactor = wd > 0 ? daysWorked / wd : 1;
 
       const fixedGross = employee?.basic || employee?.fixedSalary || 45000;
@@ -1509,10 +1511,10 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
     doc.fillColor("#0F172A");
 
     const metaRows = [
-      [{ label: "EMPLOYEE NAME", val: employee?.name || "Employee" }, { label: "EMPLOYEE CODE", val: employee?.empCode || "SW001" }],
-      [{ label: "DESIGNATION", val: employee?.designation || "Software Engineer" }, { label: "DEPARTMENT", val: employee?.department || "Engineering" }],
-      [{ label: "DATE OF JOINING", val: employee?.joiningDate || employee?.doj || "Jan 15, 2024" }, { label: "PAN NUMBER", val: employee?.panNumber || employee?.pan || "ABCDE1234F" }],
-      [{ label: "PF UAN NO", val: employee?.uan || "—" }, { label: "BANK ACCOUNT", val: employee?.bankAccount || "Registered Salary A/C" }],
+      [{ label: "EMPLOYEE NAME", val: employee?.name || "—" }, { label: "EMPLOYEE CODE", val: employee?.empCode || "—" }],
+      [{ label: "DESIGNATION", val: employee?.designation || "—" }, { label: "DEPARTMENT", val: employee?.department || "—" }],
+      [{ label: "DATE OF JOINING", val: employee?.joiningDate || employee?.doj || "—" }, { label: "PAN NUMBER", val: employee?.panNumber || employee?.pan || "—" }],
+      [{ label: "PF UAN NO", val: employee?.uan || "—" }, { label: "BANK ACCOUNT", val: employee?.bankAccount || (employee?.bankAcc ? `A/C: ${employee.bankAcc}` : "—") }],
       [{ label: "WORKING DAYS", val: `${company.workingDaysPerMonth || 26} Days` }, { label: "PRESENT DAYS", val: `${daysWorked} Days` }],
     ];
 
