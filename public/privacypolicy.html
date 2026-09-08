@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy - SwiftHR</title>
+  <meta name="description" content="Official Privacy Policy for SwiftHR Mobile & Web Application. Comprehensive disclosure of data collection, workplace geofencing, security architecture, and user privacy rights." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --primary-light: #eff6ff;
+      --secondary: #0f172a;
+      --accent: #06b6d4;
+      --emerald: #059669;
+      --emerald-light: #ecfdf5;
+      --slate-50: #f8fafc;
+      --slate-100: #f1f5f9;
+      --slate-200: #e2e8f0;
+      --slate-300: #cbd5e1;
+      --slate-400: #94a3b8;
+      --slate-500: #64748b;
+      --slate-600: #475569;
+      --slate-700: #334155;
+      --slate-800: #1e293b;
+      --slate-900: #0f172a;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 24px;
+      --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+      --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.07);
+      --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.08);
+      --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.09), 0 8px 10px -6px rgb(0 0 0 / 0.09);
+      --transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      color: var(--slate-800);
+      background-color: var(--slate-50);
+      line-height: 1.65;
+      font-size: 16px;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* Top Banner / Header */
+    header.site-header {
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--slate-200);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      transition: var(--transition);
+    }
+
+    .header-container {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: var(--slate-900);
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--primary) 0%, #4f46e5 100%);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      box-shadow: 0 4px 10px rgba(37, 99, 235, 0.28);
+    }
+
+    .brand-icon svg {
+      width: 22px;
+      height: 22px;
+      stroke-width: 2.2;
+    }
+
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .brand-title {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 800;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+      color: var(--slate-900);
+      line-height: 1.2;
+    }
+
+    .brand-subtitle {
+      font-size: 0.75rem;
+      color: var(--slate-500);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.55rem 1.1rem;
+      border-radius: var(--radius-md);
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: var(--transition);
+      border: none;
+    }
+
+    .btn-secondary {
+      background: var(--slate-100);
+      color: var(--slate-700);
+      border: 1px solid var(--slate-200);
+    }
+
+    .btn-secondary:hover {
+      background: var(--slate-200);
+      color: var(--slate-900);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #ffffff;
+      box-shadow: 0 4px 8px rgba(37, 99, 235, 0.22);
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-dark);
+      transform: translateY(-1px);
+    }
+
+    /* Hero Banner */
+    .hero-section {
+      background: linear-gradient(180deg, #ffffff 0%, var(--slate-50) 100%);
+      border-bottom: 1px solid var(--slate-200);
+      padding: 3.5rem 1.5rem 2.5rem;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero-container {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .compliance-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--emerald-light);
+      border: 1px solid #a7f3d0;
+      color: var(--emerald);
+      padding: 0.35rem 0.9rem;
+      border-radius: 9999px;
+      font-size: 0.8125rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      margin-bottom: 1.25rem;
+    }
+
+    .compliance-pill svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .hero-title {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      font-weight: 800;
+      color: var(--slate-900);
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      margin-bottom: 1rem;
+    }
+
+    .hero-title span {
+      background: linear-gradient(135deg, var(--primary) 0%, #4f46e5 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-description {
+      font-size: 1.125rem;
+      color: var(--slate-600);
+      max-width: 720px;
+      margin: 0 auto 1.5rem;
+    }
+
+    .meta-tags-container {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px dashed var(--slate-200);
+      font-size: 0.875rem;
+      color: var(--slate-500);
+    }
+
+    .meta-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .meta-tag svg {
+      width: 16px;
+      height: 16px;
+      color: var(--primary);
+    }
+
+    /* Main Content Layout */
+    .main-layout {
+      max-width: 1240px;
+      margin: 2.5rem auto 5rem;
+      padding: 0 1.5rem;
+      display: grid;
+      grid-template-columns: 290px minmax(0, 1fr);
+      gap: 2.5rem;
+      align-items: start;
+    }
+
+    /* Sidebar Navigation */
+    aside.sidebar {
+      position: sticky;
+      top: 5.5rem;
+      background: #ffffff;
+      border: 1px solid var(--slate-200);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      box-shadow: var(--shadow-sm);
+      max-height: calc(100vh - 7rem);
+      overflow-y: auto;
+    }
+
+    .sidebar-title {
+      font-size: 0.8125rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--slate-400);
+      margin-bottom: 0.85rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--slate-100);
+    }
+
+    .toc-nav {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
+    .toc-nav a {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.55rem 0.75rem;
+      border-radius: var(--radius-sm);
+      color: var(--slate-600);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: var(--transition);
+      line-height: 1.35;
+    }
+
+    .toc-nav a:hover {
+      background: var(--primary-light);
+      color: var(--primary);
+    }
+
+    .toc-nav a.active {
+      background: var(--primary);
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .toc-badge {
+      font-size: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      opacity: 0.8;
+      min-width: 1.25rem;
+    }
+
+    /* Policy Content */
+    .policy-content {
+      background: #ffffff;
+      border: 1px solid var(--slate-200);
+      border-radius: var(--radius-xl);
+      padding: 2.5rem 3rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .policy-section {
+      margin-bottom: 3.25rem;
+      scroll-margin-top: 6rem;
+    }
+
+    .policy-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--slate-200);
+    }
+
+    .section-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      background: var(--primary-light);
+      color: var(--primary);
+      border-radius: 50%;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700;
+      font-size: 0.875rem;
+      flex-shrink: 0;
+    }
+
+    h2 {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: var(--slate-900);
+      letter-spacing: -0.02em;
+    }
+
+    h3 {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--slate-800);
+      margin: 1.5rem 0 0.75rem;
+      letter-spacing: -0.01em;
+    }
+
+    p {
+      margin-bottom: 1.1rem;
+      color: var(--slate-600);
+      font-size: 0.975rem;
+      line-height: 1.7;
+    }
+
+    ul, ol {
+      margin-bottom: 1.25rem;
+      padding-left: 1.5rem;
+      color: var(--slate-600);
+    }
+
+    li {
+      margin-bottom: 0.5rem;
+      line-height: 1.6;
+      font-size: 0.975rem;
+    }
+
+    li strong {
+      color: var(--slate-800);
+    }
+
+    /* Highlight Callouts */
+    .callout {
+      border-radius: var(--radius-md);
+      padding: 1.25rem 1.5rem;
+      margin: 1.5rem 0;
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+      border-left: 4px solid transparent;
+    }
+
+    .callout svg {
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+      margin-top: 0.15rem;
+    }
+
+    .callout-info {
+      background: #f0f9ff;
+      border-left-color: var(--primary);
+      color: #0369a1;
+    }
+
+    .callout-info p {
+      color: #0c4a6e;
+      margin-bottom: 0;
+    }
+
+    .callout-security {
+      background: #f8fafc;
+      border: 1px solid var(--slate-200);
+      border-left: 4px solid #059669;
+    }
+
+    .callout-security svg {
+      color: #059669;
+    }
+
+    .callout-security p {
+      color: var(--slate-700);
+      margin-bottom: 0;
+    }
+
+    .callout-warning {
+      background: #fffbeb;
+      border-left-color: #d97706;
+      color: #92400e;
+    }
+
+    .callout-warning p {
+      color: #78350f;
+      margin-bottom: 0;
+    }
+
+    /* Security Specs Grid */
+    .security-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.25rem;
+      margin: 1.5rem 0;
+    }
+
+    .security-card {
+      background: var(--slate-50);
+      border: 1px solid var(--slate-200);
+      border-radius: var(--radius-md);
+      padding: 1.35rem;
+      transition: var(--transition);
+      position: relative;
+    }
+
+    .security-card:hover {
+      border-color: var(--primary);
+      box-shadow: var(--shadow-md);
+      transform: translateY(-2px);
+      background: #ffffff;
+    }
+
+    .security-card-icon {
+      width: 36px;
+      height: 36px;
+      background: #ffffff;
+      border: 1px solid var(--slate-200);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--primary);
+      margin-bottom: 0.85rem;
+    }
+
+    .security-card-title {
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--slate-900);
+      margin-bottom: 0.4rem;
+    }
+
+    .security-card-desc {
+      font-size: 0.85rem;
+      color: var(--slate-600);
+      line-height: 1.55;
+      margin-bottom: 0;
+    }
+
+    /* Data Tables */
+    .table-container {
+      overflow-x: auto;
+      margin: 1.5rem 0;
+      border: 1px solid var(--slate-200);
+      border-radius: var(--radius-md);
+    }
+
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.875rem;
+    }
+
+    table.data-table th {
+      background: var(--slate-100);
+      padding: 0.85rem 1rem;
+      font-weight: 700;
+      color: var(--slate-800);
+      border-bottom: 1px solid var(--slate-200);
+      white-space: nowrap;
+    }
+
+    table.data-table td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--slate-200);
+      color: var(--slate-600);
+      vertical-align: top;
+      line-height: 1.5;
+    }
+
+    table.data-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    table.data-table tr:hover td {
+      background: var(--slate-50);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .badge-primary {
+      background: #dbeafe;
+      color: #1e40af;
+    }
+
+    .badge-success {
+      background: #d1fae5;
+      color: #065f46;
+    }
+
+    .badge-warning {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    /* Step Process Box */
+    .steps-container {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+
+    .step-item {
+      display: flex;
+      gap: 1.25rem;
+      background: var(--slate-50);
+      border: 1px solid var(--slate-200);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+    }
+
+    .step-badge {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #ffffff;
+      font-weight: 700;
+      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .step-content h4 {
+      font-size: 0.975rem;
+      font-weight: 700;
+      color: var(--slate-900);
+      margin-bottom: 0.25rem;
+    }
+
+    .step-content p {
+      margin-bottom: 0;
+      font-size: 0.875rem;
+    }
+
+    /* Footer */
+    footer.site-footer {
+      background: var(--slate-900);
+      color: var(--slate-400);
+      padding: 3.5rem 1.5rem 2.5rem;
+      margin-top: auto;
+      border-top: 1px solid var(--slate-800);
+    }
+
+    .footer-container {
+      max-width: 1240px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 2.5rem;
+      padding-bottom: 2.5rem;
+      border-bottom: 1px solid var(--slate-800);
+    }
+
+    .footer-brand h4 {
+      color: #ffffff;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 800;
+      margin-bottom: 0.5rem;
+    }
+
+    .footer-brand p {
+      font-size: 0.875rem;
+      color: var(--slate-400);
+      line-height: 1.6;
+    }
+
+    .footer-nav h5 {
+      color: #ffffff;
+      font-size: 0.875rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+
+    .footer-nav ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .footer-nav li {
+      margin-bottom: 0.5rem;
+    }
+
+    .footer-nav a {
+      color: var(--slate-400);
+      text-decoration: none;
+      font-size: 0.875rem;
+      transition: var(--transition);
+    }
+
+    .footer-nav a:hover {
+      color: #ffffff;
+    }
+
+    .footer-bottom {
+      max-width: 1240px;
+      margin: 2rem auto 0;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      font-size: 0.8125rem;
+      color: var(--slate-500);
+    }
+
+    /* Print & Responsive */
+    @media (max-width: 1024px) {
+      .main-layout {
+        grid-template-columns: 1fr;
+      }
+      aside.sidebar {
+        display: none;
+      }
+      .policy-content {
+        padding: 2rem 1.5rem;
+      }
+    }
+
+    @media print {
+      header.site-header,
+      aside.sidebar,
+      .header-actions,
+      footer.site-footer,
+      .compliance-pill {
+        display: none !important;
+      }
+      .main-layout {
+        display: block;
+        margin: 0;
+        padding: 0;
+      }
+      .policy-content {
+        border: none;
+        box-shadow: none;
+        padding: 0;
+      }
+      body {
+        background: #ffffff;
+        color: #000000;
+        font-size: 11pt;
+      }
+      .hero-section {
+        background: none;
+        border: none;
+        padding: 1rem 0;
+        text-align: left;
+      }
+      .policy-section {
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Site Header -->
+  <header class="site-header">
+    <div class="header-container">
+      <a href="#" class="brand-group">
+        <div class="brand-icon">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">SwiftHR</span>
+          <span class="brand-subtitle">Enterprise Privacy Portal</span>
+        </div>
+      </a>
+
+      <div class="header-actions">
+        <button class="btn btn-secondary" onclick="window.print()">
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+          </svg>
+          Print / PDF
+        </button>
+        <a href="#contact" class="btn btn-primary">Contact Security</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section class="hero-section">
+    <div class="hero-container">
+      <div class="compliance-pill">
+        <svg fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+        </svg>
+        Google Play Store & Enterprise Security Compliant
+      </div>
+      <h1 class="hero-title">Privacy Policy & <span>Data Protection</span></h1>
+      <p class="hero-description">
+        Comprehensive transparency regarding how SwiftHR collects, utilizes, safeguards, and isolates corporate human resource and workplace attendance data under rigorous cryptographic and zero-trust standards.
+      </p>
+
+      <div class="meta-tags-container">
+        <div class="meta-tag">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+          <span>Effective Date: <strong>September 7, 2026</strong></span>
+        </div>
+        <div class="meta-tag">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+          <span>Policy Version: <strong>2.4 (Play Store Edition)</strong></span>
+        </div>
+        <div class="meta-tag">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>Global Applicability: <strong>GDPR / CCPA / International Labor Privacy</strong></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Content Layout -->
+  <main class="main-layout">
+
+    <!-- Sticky Table of Contents -->
+    <aside class="sidebar">
+      <div class="sidebar-title">Policy Table of Contents</div>
+      <ul class="toc-nav">
+        <li><a href="#overview"><span class="toc-badge">01</span> Executive Overview</a></li>
+        <li><a href="#data-collected"><span class="toc-badge">02</span> Information We Collect</a></li>
+        <li><a href="#location-data"><span class="toc-badge">03</span> Location & Geofencing</a></li>
+        <li><a href="#purpose"><span class="toc-badge">04</span> Processing Purposes</a></li>
+        <li><a href="#permissions"><span class="toc-badge">05</span> App Permissions</a></li>
+        <li><a href="#security"><span class="toc-badge">06</span> Security Architecture</a></li>
+        <li><a href="#sharing"><span class="toc-badge">07</span> Data Sharing & Isolation</a></li>
+        <li><a href="#retention"><span class="toc-badge">08</span> Retention & Purging</a></li>
+        <li><a href="#rights"><span class="toc-badge">09</span> User Rights & Controls</a></li>
+        <li><a href="#deletion"><span class="toc-badge">10</span> Account & Data Deletion</a></li>
+        <li><a href="#children"><span class="toc-badge">11</span> Children's Privacy</a></li>
+        <li><a href="#contact"><span class="toc-badge">12</span> Governance & Inquiries</a></li>
+      </ul>
+    </aside>
+
+    <!-- Detailed Policy Sections -->
+    <article class="policy-content">
+
+      <!-- Section 1 -->
+      <section id="overview" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">01</span>
+          <h2>Executive Overview & Scope</h2>
+        </div>
+        <p>
+          This Privacy Policy governs the collection, processing, transmission, and protection of personal and workplace information within the <strong>SwiftHR</strong> mobile application (available on Google Play Store) and its associated web administrative suites (collectively referred to as the <strong>"Platform"</strong>, <strong>"Service"</strong>, or <strong>"Application"</strong>).
+        </p>
+        <p>
+          SwiftHR is a specialized enterprise Human Resource Management System (HRMS) engineered to facilitate workplace attendance verification, shift scheduling, leave administration, organizational communication, and workforce reporting.
+        </p>
+        <div class="callout callout-info">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div>
+            <p>
+              <strong>Data Roles:</strong> Your employing organization is the <strong>Data Controller</strong> responsible for determining workforce policies and authorizing employee access. SwiftHR acts strictly as the <strong>Data Processor</strong>, processing data in accordance with rigorous legal agreements, enterprise mandates, and international data privacy principles.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2 -->
+      <section id="data-collected" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">02</span>
+          <h2>Information We Collect</h2>
+        </div>
+        <p>
+          To provide enterprise-level HR functionality, SwiftHR collects and processes specific categories of information based on organizational configurations and user interactions:
+        </p>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Data Category</th>
+                <th>Collected Attributes</th>
+                <th>Purpose & Justification</th>
+                <th>Classification</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Profile & Identity</strong></td>
+                <td>Full name, Employee ID, work email address, contact number, assigned department, job designation, reporting manager.</td>
+                <td>Account authentication, role authorization, and organizational structure mapping.</td>
+                <td><span class="badge badge-primary">Personal Data</span></td>
+              </tr>
+              <tr>
+                <td><strong>Attendance & Shifts</strong></td>
+                <td>Check-in/out timestamps, break durations, work logs, shift schedules, overtime calculations, leave requests.</td>
+                <td>Workplace time tracking, payroll computation, shift management, and statutory labor reporting.</td>
+                <td><span class="badge badge-primary">Workforce Data</span></td>
+              </tr>
+              <tr>
+                <td><strong>Geographic Location</strong></td>
+                <td>Precise latitude, longitude, timestamp, and location accuracy radius collected exclusively during check-in/out.</td>
+                <td>Workplace geofencing verification (confirming physical presence within authorized office/site perimeters).</td>
+                <td><span class="badge badge-warning">Sensitive Location</span></td>
+              </tr>
+              <tr>
+                <td><strong>Facial & Visual Data</strong></td>
+                <td>Profile avatar images and optional biometric attendance verification selfies. Converted into irreversible mathematical feature vectors.</td>
+                <td>Preventing identity fraud ("buddy punching") and validating employee presence at clock-in.</td>
+                <td><span class="badge badge-warning">Biometric Hash</span></td>
+              </tr>
+              <tr>
+                <td><strong>Device Diagnostics</strong></td>
+                <td>Device model, operating system version, unique installation instance token, network state, IP address, and crash reports.</td>
+                <td>Session security, fraud prevention, concurrent login protection, and system performance optimization.</td>
+                <td><span class="badge badge-success">Technical Meta</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Section 3 -->
+      <section id="location-data" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">03</span>
+          <h2>Location Data & Geofencing Transparency</h2>
+        </div>
+        <p>
+          In strict compliance with <strong>Google Play Developer Policy</strong> on Location Data Transparency, SwiftHR enforces explicit safeguards regarding user location:
+        </p>
+        <ul>
+          <li><strong>Foreground-Only Check-In Trigger:</strong> Location data is gathered <em>exclusively</em> at the precise moment an employee taps the "Clock-In" or "Clock-Out" button within the foreground application.</li>
+          <li><strong>Zero Continuous Tracking:</strong> SwiftHR <strong>does NOT</strong> continuously track your GPS coordinates in the background. Once the attendance event is processed, GPS acquisition immediately ceases.</li>
+          <li><strong>Geofence Perimeter Calculation:</strong> Coordinates are compared mathematically against the employer's pre-configured office/project site boundaries to validate attendance eligibility.</li>
+          <li><strong>No Location Commercialization:</strong> Location data is never shared, marketed, rented, or utilized for advertising or third-party telemetry under any circumstances.</li>
+        </ul>
+
+        <div class="callout callout-warning">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <div>
+            <p>
+              <strong>User Choice:</strong> You may grant or revoke location permissions via your Android system settings at any time. However, if your employer enforces geofenced check-in policies, revoking location permissions may prevent completion of remote or on-site attendance marking.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 4 -->
+      <section id="purpose" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">04</span>
+          <h2>Processing Purposes & Legal Basis</h2>
+        </div>
+        <p>We process personal and employment data under the following recognized legal bases:</p>
+        <ul>
+          <li><strong>Contractual Necessity:</strong> Processing required to fulfill the employment agreement and deliver operational HR tools (attendance processing, leave authorization, shift assignments).</li>
+          <li><strong>Legitimate Interests:</strong> Securing company assets, preventing fraudulent attendance records, enforcing workplace security, and maintaining organizational directories.</li>
+          <li><strong>Legal & Statutory Compliance:</strong> Maintaining statutory employment logs, labor law records, tax documentation, and workplace safety compliance.</li>
+          <li><strong>Consent:</strong> Explicit user authorization granted for device hardware access (Camera, GPS Location, Notifications).</li>
+        </ul>
+      </section>
+
+      <!-- Section 5 -->
+      <section id="permissions" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">05</span>
+          <h2>Android & Device Permissions Disclosures</h2>
+        </div>
+        <p>
+          The SwiftHR Android client declares specific operational permissions. Each permission is isolated to dedicated application workflows:
+        </p>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Permission Name</th>
+                <th>Android Manifest Identifier</th>
+                <th>Functional Requirement</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Precise Location</strong></td>
+                <td><code>android.permission.ACCESS_FINE_LOCATION</code></td>
+                <td>Acquires high-precision GPS coordinates during attendance clock-in to match against corporate workplace geofences.</td>
+              </tr>
+              <tr>
+                <td><strong>Approximate Location</strong></td>
+                <td><code>android.permission.ACCESS_COARSE_LOCATION</code></td>
+                <td>Provides network-based fallback location when GPS satellite signals are obstructed indoors.</td>
+              </tr>
+              <tr>
+                <td><strong>Network & Internet</strong></td>
+                <td><code>android.permission.INTERNET</code></td>
+                <td>Enables encrypted HTTPS/TLS communication with secure enterprise cloud infrastructure.</td>
+              </tr>
+              <tr>
+                <td><strong>Camera (Optional)</strong></td>
+                <td><code>android.permission.CAMERA</code></td>
+                <td>Allows users to capture profile photos or optional facial verification selfies during attendance marking.</td>
+              </tr>
+              <tr>
+                <td><strong>Media / Storage</strong></td>
+                <td><code>android.permission.READ_MEDIA_IMAGES</code></td>
+                <td>Allows employees to upload leave medical certificates, expense receipts, or identity documents.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Section 6 -->
+      <section id="security" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">06</span>
+          <h2>Enterprise Security Architecture & Technical Safeguards</h2>
+        </div>
+        <p>
+          SwiftHR employs an in-depth, defense-in-depth security framework built in alignment with internationally recognized cybersecurity standards (including <strong>ISO/IEC 27001</strong> and <strong>SOC 2 Type II</strong> control principles). All operations are governed by zero-trust architectural parameters:
+        </p>
+
+        <!-- Security Specs Grid -->
+        <div class="security-grid">
+          <div class="security-card">
+            <div class="security-card-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </div>
+            <div class="security-card-title">Cryptographic In-Transit Protection</div>
+            <p class="security-card-desc">
+              All communications between mobile clients, administrative consoles, and backend APIs are strictly encrypted using <strong>TLS 1.3 / HTTPS</strong> with Perfect Forward Secrecy (PFS) and hardened cryptographic cipher suites.
+            </p>
+          </div>
+
+          <div class="security-card">
+            <div class="security-card-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+              </svg>
+            </div>
+            <div class="security-card-title">Military-Grade Encryption at Rest</div>
+            <p class="security-card-desc">
+              All persisted corporate data, employee profiles, timestamps, audit trails, and backup archives are encrypted at rest using <strong>256-bit Advanced Encryption Standard (AES-256)</strong> with automated key rotation.
+            </p>
+          </div>
+
+          <div class="security-card">
+            <div class="security-card-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <div class="security-card-title">Strict Multi-Tenant Isolation</div>
+            <p class="security-card-desc">
+              Logical tenant partitioning ensures complete data segregation between organizations. Strict partition isolation tokens prevent any cross-tenant data visibility or unauthorized resource crossover.
+            </p>
+          </div>
+
+          <div class="security-card">
+            <div class="security-card-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+            </div>
+            <div class="security-card-title">Token Authentication & RBAC</div>
+            <p class="security-card-desc">
+              Stateless cryptographically-signed authorization tokens with short expiration lifespans. Granular Role-Based Access Control (RBAC) restricts administrative privileges strictly on a least-privilege basis.
+            </p>
+          </div>
+
+          <div class="security-card">
+            <div class="security-card-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+            </div>
+            <div class="security-card-title">Biometric Vector Protection</div>
+            <p class="security-card-desc">
+              Facial attendance verification uses non-reversible, one-way mathematical feature representations (vectors). Raw photographic biometric templates are never stored or exposed across public endpoints.
+            </p>
+          </div>
+
+          <div class="security-card">
+            <div class="security-card-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+              </svg>
+            </div>
+            <div class="security-card-title">Immutable Audit Logs & WAF</div>
+            <p class="security-card-desc">
+              Comprehensive logging of authentication events, administrative modifications, and access attempts. Protected by Web Application Firewalls (WAF) and intelligent rate-limiting mitigators.
+            </p>
+          </div>
+        </div>
+
+        <h3>Additional Technical & Organizational Safeguards</h3>
+        <ul>
+          <li><strong>Client-Side Storage Security:</strong> Mobile authentication credentials and refresh tokens are stored exclusively within hardware-backed secure storage containers (Android Keystore / Encrypted Storage). Cleartext secrets are never written to unencrypted shared storage.</li>
+          <li><strong>Vulnerability Management:</strong> Continuous automated dependency scanning, code static analysis (SAST), and routine third-party penetration testing to identify and remediate potential attack vectors.</li>
+          <li><strong>Disaster Recovery & Redundancy:</strong> Geo-redundant automated snapshots and continuous real-time replication guarantee 99.9% high availability and point-in-time disaster recovery.</li>
+          <li><strong>Incident Response Protocol:</strong> In the event of a confirmed data security incident, SwiftHR maintains an incident response protocol to notify affected enterprise controllers and regulatory authorities within 72 hours of verification.</li>
+        </ul>
+      </section>
+
+      <!-- Section 7 -->
+      <section id="sharing" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">07</span>
+          <h2>Data Sharing & Third-Party Disclosure Restrictions</h2>
+        </div>
+        <p>
+          <strong>SwiftHR maintains an absolute policy against selling, monetizing, or trading personal or organizational workforce data.</strong>
+        </p>
+        <p>Data disclosure is restricted strictly to authorized operational channels:</p>
+        <ul>
+          <li><strong>Your Employer (Authorized Enterprise Administrators):</strong> Your designated organizational administrators have access to attendance logs, leave balances, work hours, and profile details in accordance with corporate workplace governance.</li>
+          <li><strong>Essential Infrastructure Sub-Processors:</strong> Secure cloud compute, encrypted storage, and transactional notification gateways operating under signed Data Processing Agreements (DPAs) requiring adherence to equivalent security and privacy standards.</li>
+          <li><strong>Legal & Regulatory Mandates:</strong> Where disclosure is strictly compelled by lawful court order, subpoena, or enforceable governmental regulation.</li>
+        </ul>
+      </section>
+
+      <!-- Section 8 -->
+      <section id="retention" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">08</span>
+          <h2>Data Retention, Archival & Purging Policy</h2>
+        </div>
+        <p>
+          We retain personal and workplace data only for as long as necessary to satisfy operational purposes, contractual agreements with your employer, and applicable statutory retention requirements (such as labor laws, financial audit standards, and tax record mandates).
+        </p>
+        <ul>
+          <li><strong>Active Employment Duration:</strong> Account records, shift schedules, and attendance histories remain active for the duration of the organization's subscription and your employment status.</li>
+          <li><strong>Post-Termination Archival:</strong> Upon employee offboarding, records are transitioned into restricted read-only archival status pursuant to the employer's configured retention schedule (typically 3 to 7 years for statutory compliance).</li>
+          <li><strong>Cryptographic Purging:</strong> When the statutory or contractual retention window expires, all associated data records, tokens, and visual vectors are securely purged using cryptographic overwriting routines.</li>
+        </ul>
+      </section>
+
+      <!-- Section 9 -->
+      <section id="rights" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">09</span>
+          <h2>User Privacy Rights & Regional Protections</h2>
+        </div>
+        <p>
+          Depending on your jurisdiction (such as under the <strong>General Data Protection Regulation (GDPR)</strong>, <strong>California Consumer Privacy Act (CCPA/CPRA)</strong>, and national labor data privacy statutes), you possess distinct legal rights regarding your personal information:
+        </p>
+
+        <ul>
+          <li><strong>Right of Access:</strong> Request confirmation of whether your personal data is being processed and obtain a portable copy of your records.</li>
+          <li><strong>Right of Rectification:</strong> Request correction of inaccurate or incomplete profile or attendance information.</li>
+          <li><strong>Right to Erasure ("Right to be Forgotten"):</strong> Request deletion of your personal records, subject to employer labor-record legal retention duties.</li>
+          <li><strong>Right to Restrict Processing:</strong> Request temporary restriction of data processing during verification or dispute resolution.</li>
+          <li><strong>Right to Data Portability:</strong> Obtain structured, machine-readable exports (such as CSV or JSON) of your attendance and profile records.</li>
+          <li><strong>Right to Withdraw Consent:</strong> Revoke mobile hardware permissions (Location, Camera) at any time via Android operating system settings.</li>
+        </ul>
+      </section>
+
+      <!-- Section 10 -->
+      <section id="deletion" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">10</span>
+          <h2>Account & Data Deletion Protocol (Play Store Mandate)</h2>
+        </div>
+        <p>
+          In accordance with Google Play's <strong>Account Deletion Policy</strong>, users have direct and accessible mechanisms to request full account termination and personal data removal:
+        </p>
+
+        <div class="steps-container">
+          <div class="step-item">
+            <div class="step-badge">1</div>
+            <div class="step-content">
+              <h4>Submit a Direct Account & Data Deletion Request</h4>
+              <p>You may submit an account and personal data deletion request directly to our support team by emailing <a href="mailto:support.swifthr@gmail.com"><strong>support.swifthr@gmail.com</strong></a> with your Registered Work Email, Employee ID, and Company Name.</p>
+            </div>
+          </div>
+
+          <div class="step-item">
+            <div class="step-badge">2</div>
+            <div class="step-content">
+              <h4>Verification & Processing Timeline</h4>
+              <p>Upon identity validation and confirmation with your employer controller, your active account credentials, biometric feature vectors, and non-statutory personal data will be permanently purged within <strong>30 calendar days</strong>, followed by a written confirmation via email.</p>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 1.25rem;">
+          <a href="delete-account.html" class="btn btn-secondary" style="border: 1px solid #fca5a5; color: #b91c1c; background: #fef2f2;">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            Open Dedicated Account Deletion Portal
+          </a>
+        </div>
+      </section>
+
+      <!-- Section 11 -->
+      <section id="children" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">11</span>
+          <h2>Children's Privacy Protection</h2>
+        </div>
+        <p>
+          SwiftHR is exclusively an enterprise workforce management tool designed for corporate employees and authorized contractors of legal working age. We do not knowingly market to, collect, or solicit personal data from children under the age of 16 (or under the minimum statutory working age in applicable jurisdictions).
+        </p>
+        <p>
+          If we become aware that personal information of a minor has been collected inadvertently without verified legal guardian or employer authorization, we will immediately delete the associated records from our systems.
+        </p>
+      </section>
+
+      <!-- Section 12 -->
+      <section id="contact" class="policy-section">
+        <div class="section-header">
+          <span class="section-number">12</span>
+          <h2>Data Governance & Contact Information</h2>
+        </div>
+        <p>
+          If you have inquiries, concerns, or requests regarding this Privacy Policy, our cryptographic security practices, or your data privacy rights, please contact our designated Data Protection & Support Team:
+        </p>
+
+        <div class="callout callout-security">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+          <div>
+            <p>
+              <strong>Data Protection & Support Operations:</strong><br />
+              <strong>Email:</strong> <a href="mailto:support.swifthr@gmail.com" style="color: var(--primary); text-decoration: underline;">support.swifthr@gmail.com</a><br />
+              <strong>Application:</strong> SwiftHR Mobile & Web Suite<br />
+              <strong>Target Ecosystem:</strong> Google Play Store & Enterprise Cloud Web
+            </p>
+          </div>
+        </div>
+      </section>
+
+    </article>
+  </main>
+
+  <!-- Site Footer -->
+  <footer class="site-footer">
+    <div class="footer-container">
+      <div class="footer-brand">
+        <h4>SwiftHR</h4>
+        <p>
+          Next-generation enterprise workforce and attendance management platform. Built with security-first principles and zero-compromise privacy safeguards.
+        </p>
+      </div>
+
+      <div class="footer-nav">
+        <h5>Quick Links</h5>
+        <ul>
+          <li><a href="#overview">Overview & Scope</a></li>
+          <li><a href="#location-data">Location & Geofencing</a></li>
+          <li><a href="#security">Security Framework</a></li>
+          <li><a href="#deletion">Data Deletion Policy</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-nav">
+        <h5>Security & Standards</h5>
+        <ul>
+          <li><span style="color: #94a3b8;">• TLS 1.3 Transport Encryption</span></li>
+          <li><span style="color: #94a3b8;">• AES-256 Storage Encryption</span></li>
+          <li><span style="color: #94a3b8;">• Multi-Tenant Zero-Trust</span></li>
+          <li><span style="color: #94a3b8;">• Google Play Developer Compliant</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <div>&copy; 2026 SwiftHR. All rights reserved. Proprietary enterprise documentation.</div>
+      <div>Designed for Google Play Store Policy Compliance</div>
+    </div>
+  </footer>
+
+  <script>
+    // Smooth scroll & active navigation highlighting
+    document.addEventListener('DOMContentLoaded', () => {
+      const links = document.querySelectorAll('.toc-nav a');
+      const sections = document.querySelectorAll('.policy-section');
+
+      function changeActiveLink() {
+        let index = sections.length;
+        while (--index && window.scrollY + 120 < sections[index].offsetTop) {}
+        links.forEach((link) => link.classList.remove('active'));
+        if (links[index]) {
+          links[index].classList.add('active');
+        }
+      }
+
+      changeActiveLink();
+      window.addEventListener('scroll', changeActiveLink);
+    });
+  </script>
+</body>
+</html>

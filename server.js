@@ -50,6 +50,15 @@ app.use(express.text({
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+const path = require("path");
+app.use(express.static(path.join(__dirname, "public")));
+app.get(["/privacypolicy", "/privacy-policy"], (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "privacypolicy.html"));
+});
+app.get(["/delete-account", "/account-deletion", "/deleteaccount", "/delete-data"], (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "delete-account.html"));
+});
+
 // BioMax / eSSL / ZKTeco ADMS & Attendance Cloud Engine
 const biometricRoutes = require("./routes/biometricRoutes");
 app.use(biometricRoutes);
