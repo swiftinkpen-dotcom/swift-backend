@@ -57,23 +57,41 @@ function getFirebaseAdmin() {
     const { getMessaging } = require('firebase-admin/messaging');
     let serviceAccount = null;
 
-    // 1. Check if provided as environment variable (JSON string or Base64)
-    const envServiceAccount =
-      process.env.FIREBASE_SERVICE_ACCOUNT ||
-      process.env['firebase-service-account'] ||
-      process.env.firebase_service_account ||
-      process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-
-    if (envServiceAccount) {
+    // 1. Check if individual variables are set (Recommended for Railway/clean envs)
+    if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
       try {
-        let raw = envServiceAccount.trim();
-        if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-          raw = raw.slice(1, -1);
-        }
-        serviceAccount = JSON.parse(raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8'));
-        console.log('✅ [FCM] Firebase service account parsed from environment variable.');
+        const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n').trim();
+        serviceAccount = {
+          projectId: process.env.FIREBASE_PROJECT_ID.trim(),
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL.trim(),
+          privateKey: privateKey,
+          project_id: process.env.FIREBASE_PROJECT_ID.trim(),
+        };
+        console.log('✅ [FCM] Firebase service account loaded from individual environment variables.');
       } catch (e) {
-        console.warn('⚠️ [FCM] Failed to parse Firebase service account env variable:', e.message);
+        console.warn('⚠️ [FCM] Failed to parse individual Firebase env variables:', e.message);
+      }
+    }
+
+    // 2. Check if provided as full JSON environment variable (JSON string or Base64)
+    if (!serviceAccount) {
+      const envServiceAccount =
+        process.env.FIREBASE_SERVICE_ACCOUNT ||
+        process.env['firebase-service-account'] ||
+        process.env.firebase_service_account ||
+        process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+      if (envServiceAccount) {
+        try {
+          let raw = envServiceAccount.trim();
+          if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+            raw = raw.slice(1, -1);
+          }
+          serviceAccount = JSON.parse(raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8'));
+          console.log('✅ [FCM] Firebase service account parsed from JSON environment variable.');
+        } catch (e) {
+          console.warn('⚠️ [FCM] Failed to parse Firebase service account env variable:', e.message);
+        }
       }
     }
 
