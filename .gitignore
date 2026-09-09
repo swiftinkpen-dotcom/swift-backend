@@ -9,6 +9,9 @@ lerna-debug.log*
 
 .env 
 
+firebase-service-account.json
+swift-f35ac-firebase-adminsdk-fbsvc-40f13d3662.json
+
 node_modules
 dist
 dist-ssr
