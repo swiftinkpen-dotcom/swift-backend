@@ -53,12 +53,37 @@ function findServiceAccountPath() {
 function getFirebaseAdmin() {
   if (firebaseAdmin) return firebaseAdmin;
   try {
-    const serviceAccountPath = findServiceAccountPath();
-    if (serviceAccountPath && fs.existsSync(serviceAccountPath)) {
-      const admin = require('firebase-admin');
-      const { getMessaging } = require('firebase-admin/messaging');
-      const serviceAccount = require(serviceAccountPath);
+    const admin = require('firebase-admin');
+    const { getMessaging } = require('firebase-admin/messaging');
+    let serviceAccount = null;
 
+    // 1. Check if provided as environment variable (JSON string or Base64)
+    const envServiceAccount =
+      process.env.FIREBASE_SERVICE_ACCOUNT ||
+      process.env['firebase-service-account'] ||
+      process.env.firebase_service_account ||
+      process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+    if (envServiceAccount) {
+      try {
+        const raw = envServiceAccount.trim();
+        serviceAccount = JSON.parse(raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8'));
+        console.log('✅ [FCM] Firebase Admin SDK initialized using environment variable.');
+      } catch (e) {
+        console.warn('⚠️ [FCM] Failed to parse Firebase service account env variable:', e.message);
+      }
+    }
+
+    // 2. Fallback to physical local file
+    if (!serviceAccount) {
+      const serviceAccountPath = findServiceAccountPath();
+      if (serviceAccountPath && fs.existsSync(serviceAccountPath)) {
+        serviceAccount = require(serviceAccountPath);
+        console.log(`✅ [FCM] Firebase Admin SDK initialized using: ${path.basename(serviceAccountPath)}`);
+      }
+    }
+
+    if (serviceAccount) {
       const app = !admin.getApps().length
         ? admin.initializeApp({
             credential: admin.cert(serviceAccount),
@@ -69,10 +94,9 @@ function getFirebaseAdmin() {
         admin,
         messaging: getMessaging(app),
       };
-      console.log(`✅ [FCM] Firebase Admin SDK initialized using: ${path.basename(serviceAccountPath)}`);
       return firebaseAdmin;
     } else {
-      console.log('ℹ️ [FCM] Place "firebase-service-account.json" or "*-firebase-adminsdk-*.json" in swift-backend.');
+      console.log('ℹ️ [FCM] Place "firebase-service-account.json" in root or set FIREBASE_SERVICE_ACCOUNT env var.');
     }
   } catch (err) {
     console.warn('⚠️ [FCM] Could not initialize Firebase Admin:', err.message);
