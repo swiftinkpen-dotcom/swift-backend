@@ -7,7 +7,13 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-.env 
+.env
+
+# Firebase & sensitive credentials
+*firebase-adminsdk*.json
+firebase-service-account.json
+data/device-tokens.json
+
 
 node_modules
 dist
