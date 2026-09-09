@@ -94,7 +94,13 @@ class AdmsService {
     }
 
     // 4. Parse punch records
-    const parsedRecords = parseAdmsPayload(rawBody);
+    let parsedRecords = parseAdmsPayload(rawBody);
+    if (parsedRecords.length > 100) {
+      console.log(`ℹ️ [ADMS Push Limit] Device pushed ${parsedRecords.length} records. Restricting to recent 100 records.`);
+      parsedRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      parsedRecords = parsedRecords.slice(0, 100);
+      parsedRecords.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    }
     let savedCount = 0;
 
     for (const rec of parsedRecords) {
