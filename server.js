@@ -63,6 +63,11 @@ app.get(["/delete-account", "/account-deletion", "/deleteaccount", "/delete-data
 const biometricRoutes = require("./routes/biometricRoutes");
 app.use(biometricRoutes);
 
+// Firebase Cloud Messaging Push Notification Engine
+const notificationRoutes = require("./routes/notificationRoutes");
+app.use("/api/notifications", notificationRoutes);
+
+
 const PORT = process.env.PORT || 5000;
 
 const credentials = {

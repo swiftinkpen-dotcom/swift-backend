@@ -7,7 +7,13 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-.env 
+.env
+
+# Firebase & sensitive credentials
+*firebase-adminsdk*.json
+firebase-service-account.json
+data/device-tokens.json
+
 
 firebase-service-account.json
 swift-f35ac-firebase-adminsdk-fbsvc-40f13d3662.json
