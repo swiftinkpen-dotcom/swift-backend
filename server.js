@@ -936,6 +936,7 @@ app.post("/api/requests/submit", async (req, res) => {
     details,
     reason,
     notes,
+    attachments,
     metadata,
   } = req.body;
 
@@ -1035,6 +1036,10 @@ app.post("/api/requests/submit", async (req, res) => {
     const isAutoApproved = workflow?.workflowMode === "auto" && workflow?.finalLevelAction === "auto_approve";
     const initialStatus = isAutoApproved ? "Approved" : "Pending";
 
+    const resolvedAttachments = Array.isArray(attachments)
+      ? attachments
+      : (Array.isArray(metadata?.attachments) ? metadata.attachments : []);
+
     const newRequest = {
       id: `${category}-${Date.now()}`,
       tenantId,
@@ -1054,6 +1059,7 @@ app.post("/api/requests/submit", async (req, res) => {
       details: details || reason || "",
       reason: reason || details || "",
       notes: notes || (workflow ? `Approval Mode: ${workflow.approvalType.toUpperCase()} • Escalation: ${escalationDays}d` : ""),
+      attachments: resolvedAttachments,
       status: initialStatus,
       currentLevel: 1,
       totalLevels: approvalSteps.length,
@@ -1086,6 +1092,7 @@ app.post("/api/requests/submit", async (req, res) => {
         assignedRole: approvalSteps[0]?.roleName || "HR Grievance Committee",
         subject: title || details || "Grievance Ticket",
         description: details || reason || "",
+        attachments: resolvedAttachments,
         status: "Open",
         thread: [
           {
@@ -1094,6 +1101,7 @@ app.post("/api/requests/submit", async (req, res) => {
             senderName: newRequest.employeeName,
             senderRole: "Employee",
             message: details || reason || "Initial ticket submission",
+            attachments: resolvedAttachments,
             createdAt: new Date().toISOString(),
           },
         ],
