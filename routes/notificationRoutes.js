@@ -66,9 +66,12 @@ function getFirebaseAdmin() {
 
     if (envServiceAccount) {
       try {
-        const raw = envServiceAccount.trim();
+        let raw = envServiceAccount.trim();
+        if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+          raw = raw.slice(1, -1);
+        }
         serviceAccount = JSON.parse(raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8'));
-        console.log('✅ [FCM] Firebase Admin SDK initialized using environment variable.');
+        console.log('✅ [FCM] Firebase service account parsed from environment variable.');
       } catch (e) {
         console.warn('⚠️ [FCM] Failed to parse Firebase service account env variable:', e.message);
       }
@@ -84,6 +87,11 @@ function getFirebaseAdmin() {
     }
 
     if (serviceAccount) {
+      // Fix escaped newlines in private_key (crucial when pasted in cloud environment variables)
+      if (serviceAccount.private_key) {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+      }
+
       const app = !admin.getApps().length
         ? admin.initializeApp({
             credential: admin.cert(serviceAccount),
@@ -94,12 +102,13 @@ function getFirebaseAdmin() {
         admin,
         messaging: getMessaging(app),
       };
+      console.log(`✅ [FCM] Firebase Admin SDK initialized successfully for project: ${serviceAccount.project_id}`);
       return firebaseAdmin;
     } else {
-      console.log('ℹ️ [FCM] Place "firebase-service-account.json" in root or set FIREBASE_SERVICE_ACCOUNT env var.');
+      console.log('ℹ️ [FCM] Place "firebase-service-account.json" in root or set firebase-service-account env var.');
     }
   } catch (err) {
-    console.warn('⚠️ [FCM] Could not initialize Firebase Admin:', err.message);
+    console.error('⚠️ [FCM] Could not initialize Firebase Admin:', err.message, err.stack);
   }
   return null;
 }
