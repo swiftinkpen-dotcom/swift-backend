@@ -7,6 +7,7 @@ const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetComma
 const { S3Client, PutObjectCommand, HeadBucketCommand, CreateBucketCommand } = require("@aws-sdk/client-s3");
 const { RekognitionClient, IndexFacesCommand, SearchFacesByImageCommand, CreateCollectionCommand, DescribeCollectionCommand } = require("@aws-sdk/client-rekognition");
 const OpenAI = require("openai");
+const { WebSocketServer } = require("ws");
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -78,7 +79,11 @@ const region = process.env.AWS_REGION || "ap-south-1";
 
 // AWS SDK Connection
 const client = new DynamoDBClient({ region, credentials });
-const ddb = DynamoDBDocumentClient.from(client);
+const ddb = DynamoDBDocumentClient.from(client, {
+  marshallOptions: {
+    removeUndefinedValues: true,
+  },
+});
 
 const s3 = new S3Client({ region, credentials });
 const rekognition = new RekognitionClient({ region, credentials });
@@ -405,6 +410,8 @@ const COMPANY_TABLES = {
   requests: "swift_company_requests",
   devices: "swift_company_devices",
   biometricLogs: "swift_company_biometric_logs",
+  teamGroups: "swift_company_team_groups",
+  teamMessages: "swift_company_team_messages",
 };
 
 // Helper to check and create a composite key table (HASH + RANGE)
@@ -1333,6 +1340,55 @@ app.post("/api/requests/act", async (req, res) => {
         }
       } catch (profErr) {
         console.warn("[Profile Auto-Apply Error]:", profErr.message);
+      }
+    }
+
+    // If approved or rejected and category is team_group: update group status and broadcast
+    if ((updatedItem.category === "team_group" || updatedItem.category === "group") && updatedItem.metadata?.groupId) {
+      try {
+        const targetGroupId = updatedItem.metadata.groupId;
+        const grpRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.teamGroups,
+          Key: { tenantId, id: targetGroupId },
+        }));
+        if (grpRes.Item) {
+          const newStatus = updatedItem.status === "Approved" ? "approved" : "rejected";
+          const updatedGrp = {
+            ...grpRes.Item,
+            status: newStatus,
+            approvedBy: actorName || "Admin",
+            approvedAt: now,
+            lastMessageText: newStatus === "approved" ? "Group approved and active" : "Group creation declined by admin",
+            lastMessageTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            updatedAt: now,
+          };
+          await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.teamGroups, Item: updatedGrp }));
+
+          if (newStatus === "approved") {
+            const welcomeMsg = {
+              tenantId,
+              id: `msg-sys-${Date.now()}`,
+              groupId: targetGroupId,
+              senderId: "system",
+              senderName: "System",
+              text: `Group "${grpRes.Item.subject}" was approved by Admin. You can now chat!`,
+              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              isSystem: true,
+              createdAt: now,
+            };
+            await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.teamMessages, Item: welcomeMsg }));
+          }
+
+          broadcastToTenant(tenantId, {
+            type: "group_status_changed",
+            groupId: targetGroupId,
+            status: newStatus,
+            group: updatedGrp,
+          });
+          console.log(`[Team Chat Group] Group ${targetGroupId} status updated to ${newStatus}`);
+        }
+      } catch (grpErr) {
+        console.warn("[Team Chat Group Action Error]:", grpErr.message);
       }
     }
 
@@ -5249,11 +5305,299 @@ app.get("/api/attendance/auto-close-missed-checkouts/status", (req, res) => {
   });
 });
 
+// ==========================================
+// TEAM CHAT & WEBSOCKET REAL-TIME ENGINE
+// ==========================================
+const connectedClients = new Map(); // ws => { tenantId, employeeId, groupId }
+
+function broadcastToGroup(groupId, eventData) {
+  const payload = JSON.stringify(eventData);
+  for (const [ws, client] of connectedClients.entries()) {
+    if (ws.readyState === 1 && (client.groupId === groupId || !client.groupId)) {
+      try {
+        ws.send(payload);
+      } catch (err) {
+        console.warn("[WS Broadcast error]:", err.message);
+      }
+    }
+  }
+}
+
+function broadcastToTenant(tenantId, eventData) {
+  const payload = JSON.stringify(eventData);
+  for (const [ws, client] of connectedClients.entries()) {
+    if (ws.readyState === 1 && (!client.tenantId || client.tenantId === tenantId)) {
+      try {
+        ws.send(payload);
+      } catch (err) {
+        console.warn("[WS Broadcast Tenant error]:", err.message);
+      }
+    }
+  }
+}
+
+// 1. Fetch Groups for Employee
+app.get("/api/team-chat/groups", async (req, res) => {
+  const { tenantId, employeeId } = req.query;
+  if (!tenantId) {
+    return res.status(400).json({ error: "Missing required parameter: tenantId" });
+  }
+
+  try {
+    const allGroups = await getTenantItems(COMPANY_TABLES.teamGroups, tenantId);
+    // Filter groups where employee is creator or member
+    const userGroups = allGroups.filter((g) => {
+      if (!employeeId) return true;
+      if (g.creatorId === employeeId) return true;
+      if (Array.isArray(g.members) && g.members.some((m) => m.id === employeeId || m.empCode === employeeId)) return true;
+      return false;
+    });
+
+    // Sort by latest updated/created
+    userGroups.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+    res.json({ success: true, groups: userGroups });
+  } catch (err) {
+    console.error("[TeamChat] Error fetching groups:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Fetch Messages for Group
+app.get("/api/team-chat/messages", async (req, res) => {
+  const { tenantId, groupId } = req.query;
+  if (!tenantId || !groupId) {
+    return res.status(400).json({ error: "Missing required parameters: tenantId, groupId" });
+  }
+
+  try {
+    const allMessages = await getTenantItems(COMPANY_TABLES.teamMessages, tenantId);
+    const groupMsgs = allMessages
+      .filter((m) => m.groupId === groupId)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    res.json({ success: true, messages: groupMsgs });
+  } catch (err) {
+    console.error("[TeamChat] Error fetching messages:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Request New Group Creation (Requires Admin Approval)
+app.post("/api/team-chat/groups/request", async (req, res) => {
+  const {
+    tenantId,
+    creatorId,
+    creatorName,
+    subject,
+    description,
+    iconEmoji,
+    iconBgColor,
+    members,
+  } = req.body;
+
+  if (!tenantId || !creatorId || !subject) {
+    return res.status(400).json({ error: "Missing required fields: tenantId, creatorId, subject" });
+  }
+
+  try {
+    const now = new Date().toISOString();
+    const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const groupId = `grp-${Date.now()}`;
+    const requestId = `req-grp-${Date.now()}`;
+
+    // Sanitize member items to strip undefined fields
+    const cleanMembers = (members || []).map((m) => {
+      const cleanM = {
+        id: String(m.id || m.empCode || ''),
+        name: String(m.name || 'Member'),
+        role: String(m.role || 'Member'),
+        department: String(m.department || 'Team'),
+        isAdmin: !!m.isAdmin,
+      };
+      if (m.avatar) cleanM.avatar = String(m.avatar);
+      return cleanM;
+    });
+
+    // 1. Create Group Record with status 'pending_approval'
+    const groupRecord = {
+      tenantId,
+      id: groupId,
+      subject: subject.trim(),
+      description: description ? description.trim() : "",
+      iconEmoji: iconEmoji || "🚀",
+      iconBgColor: iconBgColor || "#128C7E",
+      createdBy: creatorName || "Employee",
+      creatorId,
+      createdAt: now,
+      status: "pending_approval", // Pending Admin Approval!
+      members: cleanMembers,
+      lastMessageText: "Waiting for Admin Approval",
+      lastMessageTime: timeStr,
+      lastMessageSender: "System",
+      unreadCount: 0,
+      requestId,
+      updatedAt: now,
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.teamGroups,
+      Item: groupRecord,
+    }));
+
+    // 2. Register Unified Approval Request in requests table
+    const memberNames = cleanMembers.map((m) => m.name).join(", ");
+    const requestItem = {
+      tenantId,
+      id: requestId,
+      category: "team_group",
+      workflowId: "wf-team-group",
+      type: "Team Group Creation",
+      title: `Team Group: "${subject.trim()}"`,
+      employeeId: creatorId,
+      employeeName: creatorName || "Employee",
+      date: now.split("T")[0],
+      status: "Pending",
+      currentLevel: 1,
+      totalLevels: 1,
+      approvalSteps: [
+        {
+          level: 1,
+          role: "Admin",
+          status: "Pending",
+        },
+      ],
+      details: `Group: "${subject.trim()}" with ${cleanMembers.length} participants (${memberNames}). Purpose: ${description || "General team collaboration"}`,
+      reason: description || `Team collaboration channel for ${subject.trim()}`,
+      metadata: {
+        groupId,
+        groupSubject: subject.trim(),
+        groupDescription: description || "",
+        iconEmoji: iconEmoji || "🚀",
+        iconBgColor: iconBgColor || "#128C7E",
+        members: cleanMembers,
+        memberCount: cleanMembers.length,
+        memberNames,
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.requests,
+      Item: requestItem,
+    }));
+
+    // Broadcast new request to Admin Panel via WebSocket
+    broadcastToTenant(tenantId, {
+      type: "new_request",
+      request: requestItem,
+    });
+
+    console.log(`[TeamChat] Group creation request submitted: "${subject}" (${groupId}) by ${creatorName}`);
+    res.json({ success: true, group: groupRecord, request: requestItem });
+  } catch (err) {
+    console.error("[TeamChat] Error requesting group creation:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // App Startup Initializer
 async function startServer() {
   const server = app.listen(PORT, () => {
     console.log(`[Server] Super Admin backend API running at http://localhost:${PORT}`);
   });
+
+  // Attach WebSocket Server for Real-Time Team Chat
+  try {
+    const wss = new WebSocketServer({ server, path: "/ws/team-chat" });
+    console.log("[WebSocket] Team Chat WebSocket server initialized on path /ws/team-chat");
+
+    wss.on("connection", (ws, req) => {
+      connectedClients.set(ws, {});
+
+      ws.on("message", async (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === "join") {
+            connectedClients.set(ws, {
+              tenantId: msg.tenantId,
+              employeeId: msg.employeeId,
+              groupId: msg.groupId,
+            });
+            ws.send(JSON.stringify({ type: "joined", groupId: msg.groupId }));
+          } else if (msg.type === "send_message") {
+            const { tenantId, groupId, senderId, senderName, text, time } = msg;
+            if (!groupId || !text) return;
+            const now = new Date().toISOString();
+            const timeNow = time || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            const msgId = msg.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+            const newMsgItem = {
+              tenantId: tenantId || "swift",
+              id: msgId,
+              groupId,
+              senderId,
+              senderName,
+              text: text.trim(),
+              time: timeNow,
+              createdAt: now,
+            };
+
+            // Save message to DynamoDB
+            await ddb.send(new PutCommand({
+              TableName: COMPANY_TABLES.teamMessages,
+              Item: newMsgItem,
+            }));
+
+            // Update group last message preview in DynamoDB
+            try {
+              const grpRes = await ddb.send(new GetCommand({
+                TableName: COMPANY_TABLES.teamGroups,
+                Key: { tenantId: tenantId || "swift", id: groupId },
+              }));
+              if (grpRes.Item) {
+                const updatedGrp = {
+                  ...grpRes.Item,
+                  lastMessageText: text.trim(),
+                  lastMessageTime: timeNow,
+                  lastMessageSender: senderName,
+                  updatedAt: now,
+                };
+                await ddb.send(new PutCommand({
+                  TableName: COMPANY_TABLES.teamGroups,
+                  Item: updatedGrp,
+                }));
+              }
+            } catch (grpErr) {
+              console.warn("[WS Group Preview Update Error]:", grpErr.message);
+            }
+
+            // Broadcast message in real-time to group participants
+            broadcastToGroup(groupId, {
+              type: "new_message",
+              groupId,
+              message: newMsgItem,
+            });
+          } else if (msg.type === "ping") {
+            ws.send(JSON.stringify({ type: "pong" }));
+          }
+        } catch (msgErr) {
+          console.warn("[WS Message Error]:", msgErr.message);
+        }
+      });
+
+      ws.on("close", () => {
+        connectedClients.delete(ws);
+      });
+
+      ws.on("error", (err) => {
+        console.warn("[WS Client Error]:", err.message);
+        connectedClients.delete(ws);
+      });
+    });
+  } catch (wsErr) {
+    console.error("[WebSocket] Failed to initialize WebSocket server:", wsErr);
+  }
 
   try {
     await initDB();
