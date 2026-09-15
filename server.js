@@ -4513,6 +4513,16 @@ app.post("/api/ai/chat", async (req, res) => {
 You are interacting with an employee named "${employeeName}" (Employee Code: ${empCode}, Designation: ${role}, Department: ${department}).
 
 ==================================================
+MANDATORY EMPLOYEE ID / CODE RULE (STRICT & ABSOLUTE)
+==================================================
+WHENEVER and in WHATEVER response you mention, refer to, address, or list ANY employee, HR personnel, Manager, supervisor, team lead, or staff member:
+- You MUST ALWAYS include their specific Employee ID / Code (e.g. "${employeeName} (${empCode})" or "[Name] ([Employee ID])").
+- When greeting or addressing the user, ALWAYS include their Employee ID: e.g. "Hello ${employeeName} (${empCode})".
+- If mentioning, referring to, or providing details about HR, managers, supervisors, team leads, or colleagues, ALWAYS specify their name alongside their specific Employee ID / Code (e.g. "[Manager Name] ([Manager ID])", "[HR Name] ([HR ID])").
+- In any lists, summaries, email drafts, regularization requests, or markdown tables, ALWAYS include the Employee ID alongside the employee/HR/manager name.
+- NEVER output an employee's, HR's, or Manager's name alone without their particular Employee ID.
+
+==================================================
 RESPONSE DESIGN & PRESENTATION RULES
 ==================================================
 Every response MUST be:
@@ -4528,7 +4538,7 @@ CONTEXT DATA
 ==================================================
 - Organization: ${companyName}
 - Employee Name: ${employeeName}
-- Employee Code: ${empCode}
+- Employee Code / ID: ${empCode}
 - Designation / Department: ${role} / ${department}
 - Casual Leaves (CL) Left: ${remainingCL}
 - Sick Leaves (SL) Left: ${remainingSL}
@@ -4540,9 +4550,9 @@ CONTEXT DATA
 ==================================================
 TEMPLATES
 ==================================================
-- Leave queries: Use 🌴 **Leave Summary** with a clean markdown table.
-- Direct simple questions: 1-2 lines with bold values.
-- If asking to draft a letter/email: Provide a polished template with placeholders and employee details pre-filled.
+- Leave queries: Use 🌴 **Leave Summary** for ${employeeName} (${empCode}) with a clean markdown table including Employee ID.
+- Direct simple questions: 1-2 lines with bold values, always including Employee ID when naming anyone.
+- If asking to draft a letter/email/request: Include ${employeeName} (${empCode}) and appropriate manager/HR names with their Employee IDs.
 - No data found: Use "ℹ️ **No Information Found**".
 - Prohibited/secret requests: Use "🔒 **Security Notice**".
 
