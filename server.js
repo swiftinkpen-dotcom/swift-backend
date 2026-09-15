@@ -1501,7 +1501,16 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
     const company = config.find((c) => c.id === "config") || {};
     const monthStr = month || new Date().toISOString().slice(0, 7);
 
-    let p = payrolls.find((pr) => (pr.employeeId === employeeId || pr.employeeId === employee?.empCode) && pr.month === monthStr);
+    let p = payrolls.find((pr) => {
+      const matchEmp =
+        pr.employeeId === employeeId ||
+        pr.employeeId === employee?.id ||
+        pr.employeeId === employee?.empCode ||
+        (pr.empCode && (pr.empCode === employeeId || pr.empCode === employee?.empCode)) ||
+        (pr.employeeName && employee?.name && pr.employeeName.trim().toLowerCase() === employee.name.trim().toLowerCase());
+      const matchMonth = pr.month === monthStr || pr.month === month;
+      return matchEmp && matchMonth;
+    });
 
     let gross = 0, net = 0, totalDeductions = 0, daysWorked = 26, earningsList = [], deductions = {};
     if (p && p.computed) {
@@ -1626,6 +1635,14 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
     if (deductions.employeeESI > 0) dedList.push({ name: "Employee State Insurance (ESI)", amount: deductions.employeeESI });
     if (deductions.professionalTax > 0) dedList.push({ name: "Professional Tax (PT)", amount: deductions.professionalTax });
     if (deductions.tds > 0) dedList.push({ name: "Income Tax (TDS)", amount: deductions.tds });
+    if (deductions.loan > 0) dedList.push({ name: "Advance Loan EMI", amount: deductions.loan });
+    if (deductions.advance > 0) dedList.push({ name: "Salary Advance", amount: deductions.advance });
+    if (deductions.lwf > 0) dedList.push({ name: "Labour Welfare Fund (LWF)", amount: deductions.lwf });
+    if (Array.isArray(p?.computed?.extraDeductions)) {
+      p.computed.extraDeductions.forEach((ed) => {
+        if (ed.amount > 0) dedList.push({ name: ed.name || "Deduction", amount: ed.amount });
+      });
+    }
 
     const maxRows = Math.max(earningsList.length, dedList.length, 1);
     for (let i = 0; i < maxRows; i++) {
