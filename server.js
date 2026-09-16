@@ -687,6 +687,15 @@ app.get("/api/companies/initial-state", async (req, res) => {
       }
     }
 
+    if (companyConfig) {
+      try {
+        const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
+        if (tenantRes.Item && tenantRes.Item.payrollLockPassword) {
+          companyConfig.payrollLockPassword = tenantRes.Item.payrollLockPassword;
+        }
+      } catch (tErr) {}
+    }
+
     if (companyConfig && !companyConfig.approvalWorkflows) {
       companyConfig.approvalWorkflows = {
         loan: [
@@ -1690,6 +1699,113 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
     doc.end();
   } catch (err) {
     res.status(500).send("Error generating payslip: " + err.message);
+  }
+});
+
+// Payroll Lock Password Verification Endpoint
+app.post("/api/payroll/verify-lock-password", async (req, res) => {
+  try {
+    const { tenantId, password } = req.body;
+    if (!password) {
+      return res.status(400).json({ success: false, error: "Password is required" });
+    }
+
+    const trimmedPassword = String(password).trim();
+
+    // 1. Fetch tenant to verify against master admin password or dedicated payroll lock password
+    let matchedTenant = null;
+    if (tenantId) {
+      try {
+        const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
+        matchedTenant = tenantRes.Item;
+      } catch (err) {
+        console.warn("[VerifyLockPassword] GetCommand tenant error:", err.message);
+      }
+    }
+
+    // If not found by direct ID, scan tenants as fallback
+    if (!matchedTenant && tenantId) {
+      try {
+        const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+        matchedTenant = (scanRes.Items || []).find(t => t.id === tenantId || t.slug === tenantId);
+      } catch (err) {
+        console.warn("[VerifyLockPassword] ScanCommand tenant error:", err.message);
+      }
+    }
+
+    // 2. Fetch company config to check for dedicated payrollLockPassword
+    let companyConfig = null;
+    if (tenantId) {
+      try {
+        const cfgRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.config,
+          Key: { tenantId, id: "config" }
+        }));
+        companyConfig = cfgRes.Item;
+      } catch (err) {
+        console.warn("[VerifyLockPassword] GetCommand config error:", err.message);
+      }
+    }
+
+    // Dedicated payroll lock password configured on tenant or company config
+    const dedicatedLockPassword = (matchedTenant && matchedTenant.payrollLockPassword) || (companyConfig && companyConfig.payrollLockPassword);
+
+    // If no password has been configured in Super Admin, lock action CANNOT be authorized
+    if (!dedicatedLockPassword || !String(dedicatedLockPassword).trim()) {
+      return res.status(403).json({
+        success: false,
+        noPasswordSet: true,
+        error: "No payroll lock password has been configured in Super Admin. Please set a password in Super Admin under Company Credentials to use Payroll Lock.",
+      });
+    }
+
+    const targetTrimmed = String(dedicatedLockPassword).trim();
+    // Match against dedicated payroll lock password ONLY
+    if (trimmedPassword === targetTrimmed) {
+      return res.json({ success: true, payrollLockPassword: targetTrimmed });
+    }
+
+    return res.status(401).json({ success: false, error: "Incorrect password. Authorization denied." });
+  } catch (error) {
+    console.error("[VerifyLockPassword] Error:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Live Payroll Lock Configuration endpoint for instant synchronization
+app.get("/api/companies/payroll-lock-config", async (req, res) => {
+  try {
+    const { tenantId } = req.query;
+    if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+
+    let matchedTenant = null;
+    try {
+      const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
+      matchedTenant = tenantRes.Item;
+    } catch (err) {}
+
+    if (!matchedTenant) {
+      try {
+        const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+        matchedTenant = (scanRes.Items || []).find(t => t.id === tenantId || t.slug === tenantId);
+      } catch (err) {}
+    }
+
+    let companyConfig = null;
+    try {
+      const cfgRes = await ddb.send(new GetCommand({
+        TableName: COMPANY_TABLES.config,
+        Key: { tenantId, id: "config" }
+      }));
+      companyConfig = cfgRes.Item;
+    } catch (err) {}
+
+    const rawPassword = (matchedTenant && matchedTenant.payrollLockPassword) || (companyConfig && companyConfig.payrollLockPassword) || "";
+    const payrollLockPassword = String(rawPassword || "").trim();
+    const isConfigured = Boolean(payrollLockPassword);
+    res.json({ success: true, payrollLockPassword, isConfigured });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -3822,6 +3938,26 @@ app.put("/api/tenants/:id", async (req, res) => {
     if (!getRes.Item) return res.status(404).json({ error: "Tenant not found" });
     const updated = { ...getRes.Item, ...req.body };
     await ddb.send(new PutCommand({ TableName: TABLES.tenants, Item: updated }));
+
+    // Also sync with COMPANY_TABLES.config if payrollLockPassword is provided
+    if (req.body.payrollLockPassword !== undefined) {
+      try {
+        const tenantId = req.params.id;
+        const cfgRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.config,
+          Key: { tenantId, id: "config" },
+        }));
+        if (cfgRes.Item) {
+          await ddb.send(new PutCommand({
+            TableName: COMPANY_TABLES.config,
+            Item: { ...cfgRes.Item, payrollLockPassword: String(req.body.payrollLockPassword).trim() },
+          }));
+        }
+      } catch (cfgErr) {
+        console.warn("[TenantUpdate] Failed to sync config.payrollLockPassword:", cfgErr.message);
+      }
+    }
+
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: error.message });
