@@ -3324,13 +3324,6 @@ app.get("/api/initial-state", async (req, res) => {
     // Scan Tenants
     const tenantsScan = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
     let tenants = tenantsScan.Items || [];
-    if (tenants.length === 0) {
-      console.log("[Database] Seeding default tenants...");
-      for (const t of defaultTenants) {
-        await ddb.send(new PutCommand({ TableName: TABLES.tenants, Item: t }));
-      }
-      tenants = defaultTenants;
-    }
 
     // Scan Other Tables
     const tickets = (await ddb.send(new ScanCommand({ TableName: TABLES.tickets }))).Items || [];
@@ -4215,11 +4208,6 @@ app.post("/api/billing/reset", async (req, res) => {
     // Put referral programs
     for (const rp of defaultReferralPrograms) {
       await ddb.send(new PutCommand({ TableName: TABLES.referral_programs, Item: rp }));
-    }
-
-    // Put tenants
-    for (const t of defaultTenants) {
-      await ddb.send(new PutCommand({ TableName: TABLES.tenants, Item: t }));
     }
 
     res.json({ success: true });
