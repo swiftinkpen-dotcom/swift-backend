@@ -4142,6 +4142,17 @@ app.post("/api/employee/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid Employee Code or Password" });
     }
 
+    const empStatus = String(matched.status || "active").toLowerCase().trim();
+    if (empStatus !== "active") {
+      const displayStatus = empStatus === "relieved" || empStatus === "releived" ? "Releived" : (matched.status ? (matched.status.charAt(0).toUpperCase() + matched.status.slice(1)) : "Inactive");
+      console.warn(`[Login Blocked] Employee ${matched.empCode} (${matched.name}) status is "${displayStatus}"`);
+      return res.status(403).json({
+        error: `Your account is ${displayStatus}. You are not permitted to log in. Please contact HR.`,
+        accountStatus: matched.status,
+        status: matched.status
+      });
+    }
+
     let companyName = "SWIFT HRMS";
     const tenantIdToLookup = matched.tenantId || "demo-tenant-1";
     try {
@@ -4168,6 +4179,49 @@ app.post("/api/employee/login", async (req, res) => {
       companyName: companyName
     });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check employee status (used by mobile app on resume/enter to verify active status)
+app.get("/api/employee/check-status", async (req, res) => {
+  try {
+    const { id, empCode } = req.query;
+    if (!id && !empCode) {
+      return res.status(400).json({ error: "Employee id or empCode is required" });
+    }
+
+    let employee = null;
+    if (id) {
+      const getRes = await ddb.send(new GetCommand({ TableName: COMPANY_TABLES.employees, Key: { id: String(id) } }));
+      employee = getRes.Item;
+    }
+
+    if (!employee && empCode) {
+      const scanRes = await ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.employees }));
+      const employees = scanRes.Items || [];
+      employee = employees.find((e) => String(e.empCode || "").toLowerCase() === String(empCode).toLowerCase());
+    }
+
+    if (!employee) {
+      return res.status(404).json({ exists: false, active: false, status: "not_found", error: "Employee record not found" });
+    }
+
+    const rawStatus = String(employee.status || "active").toLowerCase().trim();
+    const isActive = rawStatus === "active";
+    const displayStatus = rawStatus === "relieved" || rawStatus === "releived" ? "Releived" : (rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1));
+
+    return res.json({
+      exists: true,
+      active: isActive,
+      status: employee.status || "active",
+      displayStatus,
+      name: employee.name,
+      empCode: employee.empCode,
+      message: isActive ? "Account active" : `Your account has been marked as ${displayStatus}. Access restricted.`
+    });
+  } catch (error) {
+    console.error("[check-status] Error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
