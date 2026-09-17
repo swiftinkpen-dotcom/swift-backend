@@ -687,6 +687,15 @@ app.get("/api/companies/initial-state", async (req, res) => {
       }
     }
 
+    if (companyConfig) {
+      try {
+        const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
+        if (tenantRes.Item && tenantRes.Item.payrollLockPassword) {
+          companyConfig.payrollLockPassword = tenantRes.Item.payrollLockPassword;
+        }
+      } catch (tErr) {}
+    }
+
     if (companyConfig && !companyConfig.approvalWorkflows) {
       companyConfig.approvalWorkflows = {
         loan: [
@@ -1690,6 +1699,113 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
     doc.end();
   } catch (err) {
     res.status(500).send("Error generating payslip: " + err.message);
+  }
+});
+
+// Payroll Lock Password Verification Endpoint
+app.post("/api/payroll/verify-lock-password", async (req, res) => {
+  try {
+    const { tenantId, password } = req.body;
+    if (!password) {
+      return res.status(400).json({ success: false, error: "Password is required" });
+    }
+
+    const trimmedPassword = String(password).trim();
+
+    // 1. Fetch tenant to verify against master admin password or dedicated payroll lock password
+    let matchedTenant = null;
+    if (tenantId) {
+      try {
+        const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
+        matchedTenant = tenantRes.Item;
+      } catch (err) {
+        console.warn("[VerifyLockPassword] GetCommand tenant error:", err.message);
+      }
+    }
+
+    // If not found by direct ID, scan tenants as fallback
+    if (!matchedTenant && tenantId) {
+      try {
+        const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+        matchedTenant = (scanRes.Items || []).find(t => t.id === tenantId || t.slug === tenantId);
+      } catch (err) {
+        console.warn("[VerifyLockPassword] ScanCommand tenant error:", err.message);
+      }
+    }
+
+    // 2. Fetch company config to check for dedicated payrollLockPassword
+    let companyConfig = null;
+    if (tenantId) {
+      try {
+        const cfgRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.config,
+          Key: { tenantId, id: "config" }
+        }));
+        companyConfig = cfgRes.Item;
+      } catch (err) {
+        console.warn("[VerifyLockPassword] GetCommand config error:", err.message);
+      }
+    }
+
+    // Dedicated payroll lock password configured on tenant or company config
+    const dedicatedLockPassword = (matchedTenant && matchedTenant.payrollLockPassword) || (companyConfig && companyConfig.payrollLockPassword);
+
+    // If no password has been configured in Super Admin, lock action CANNOT be authorized
+    if (!dedicatedLockPassword || !String(dedicatedLockPassword).trim()) {
+      return res.status(403).json({
+        success: false,
+        noPasswordSet: true,
+        error: "No payroll lock password has been configured in Super Admin. Please set a password in Super Admin under Company Credentials to use Payroll Lock.",
+      });
+    }
+
+    const targetTrimmed = String(dedicatedLockPassword).trim();
+    // Match against dedicated payroll lock password ONLY
+    if (trimmedPassword === targetTrimmed) {
+      return res.json({ success: true, payrollLockPassword: targetTrimmed });
+    }
+
+    return res.status(401).json({ success: false, error: "Incorrect password. Authorization denied." });
+  } catch (error) {
+    console.error("[VerifyLockPassword] Error:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Live Payroll Lock Configuration endpoint for instant synchronization
+app.get("/api/companies/payroll-lock-config", async (req, res) => {
+  try {
+    const { tenantId } = req.query;
+    if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+
+    let matchedTenant = null;
+    try {
+      const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
+      matchedTenant = tenantRes.Item;
+    } catch (err) {}
+
+    if (!matchedTenant) {
+      try {
+        const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+        matchedTenant = (scanRes.Items || []).find(t => t.id === tenantId || t.slug === tenantId);
+      } catch (err) {}
+    }
+
+    let companyConfig = null;
+    try {
+      const cfgRes = await ddb.send(new GetCommand({
+        TableName: COMPANY_TABLES.config,
+        Key: { tenantId, id: "config" }
+      }));
+      companyConfig = cfgRes.Item;
+    } catch (err) {}
+
+    const rawPassword = (matchedTenant && matchedTenant.payrollLockPassword) || (companyConfig && companyConfig.payrollLockPassword) || "";
+    const payrollLockPassword = String(rawPassword || "").trim();
+    const isConfigured = Boolean(payrollLockPassword);
+    res.json({ success: true, payrollLockPassword, isConfigured });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -3208,13 +3324,6 @@ app.get("/api/initial-state", async (req, res) => {
     // Scan Tenants
     const tenantsScan = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
     let tenants = tenantsScan.Items || [];
-    if (tenants.length === 0) {
-      console.log("[Database] Seeding default tenants...");
-      for (const t of defaultTenants) {
-        await ddb.send(new PutCommand({ TableName: TABLES.tenants, Item: t }));
-      }
-      tenants = defaultTenants;
-    }
 
     // Scan Other Tables
     const tickets = (await ddb.send(new ScanCommand({ TableName: TABLES.tickets }))).Items || [];
@@ -3822,6 +3931,26 @@ app.put("/api/tenants/:id", async (req, res) => {
     if (!getRes.Item) return res.status(404).json({ error: "Tenant not found" });
     const updated = { ...getRes.Item, ...req.body };
     await ddb.send(new PutCommand({ TableName: TABLES.tenants, Item: updated }));
+
+    // Also sync with COMPANY_TABLES.config if payrollLockPassword is provided
+    if (req.body.payrollLockPassword !== undefined) {
+      try {
+        const tenantId = req.params.id;
+        const cfgRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.config,
+          Key: { tenantId, id: "config" },
+        }));
+        if (cfgRes.Item) {
+          await ddb.send(new PutCommand({
+            TableName: COMPANY_TABLES.config,
+            Item: { ...cfgRes.Item, payrollLockPassword: String(req.body.payrollLockPassword).trim() },
+          }));
+        }
+      } catch (cfgErr) {
+        console.warn("[TenantUpdate] Failed to sync config.payrollLockPassword:", cfgErr.message);
+      }
+    }
+
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -4133,11 +4262,6 @@ app.post("/api/billing/reset", async (req, res) => {
     // Put referral programs
     for (const rp of defaultReferralPrograms) {
       await ddb.send(new PutCommand({ TableName: TABLES.referral_programs, Item: rp }));
-    }
-
-    // Put tenants
-    for (const t of defaultTenants) {
-      await ddb.send(new PutCommand({ TableName: TABLES.tenants, Item: t }));
     }
 
     res.json({ success: true });
@@ -4584,6 +4708,16 @@ app.post("/api/ai/chat", async (req, res) => {
 You are interacting with an employee named "${employeeName}" (Employee Code: ${empCode}, Designation: ${role}, Department: ${department}).
 
 ==================================================
+MANDATORY EMPLOYEE ID / CODE RULE (STRICT & ABSOLUTE)
+==================================================
+WHENEVER and in WHATEVER response you mention, refer to, address, or list ANY employee, HR personnel, Manager, supervisor, team lead, or staff member:
+- You MUST ALWAYS include their specific Employee ID / Code (e.g. "${employeeName} (${empCode})" or "[Name] ([Employee ID])").
+- When greeting or addressing the user, ALWAYS include their Employee ID: e.g. "Hello ${employeeName} (${empCode})".
+- If mentioning, referring to, or providing details about HR, managers, supervisors, team leads, or colleagues, ALWAYS specify their name alongside their specific Employee ID / Code (e.g. "[Manager Name] ([Manager ID])", "[HR Name] ([HR ID])").
+- In any lists, summaries, email drafts, regularization requests, or markdown tables, ALWAYS include the Employee ID alongside the employee/HR/manager name.
+- NEVER output an employee's, HR's, or Manager's name alone without their particular Employee ID.
+
+==================================================
 RESPONSE DESIGN & PRESENTATION RULES
 ==================================================
 Every response MUST be:
@@ -4599,7 +4733,7 @@ CONTEXT DATA
 ==================================================
 - Organization: ${companyName}
 - Employee Name: ${employeeName}
-- Employee Code: ${empCode}
+- Employee Code / ID: ${empCode}
 - Designation / Department: ${role} / ${department}
 - Casual Leaves (CL) Left: ${remainingCL}
 - Sick Leaves (SL) Left: ${remainingSL}
@@ -4611,9 +4745,9 @@ CONTEXT DATA
 ==================================================
 TEMPLATES
 ==================================================
-- Leave queries: Use 🌴 **Leave Summary** with a clean markdown table.
-- Direct simple questions: 1-2 lines with bold values.
-- If asking to draft a letter/email: Provide a polished template with placeholders and employee details pre-filled.
+- Leave queries: Use 🌴 **Leave Summary** for ${employeeName} (${empCode}) with a clean markdown table including Employee ID.
+- Direct simple questions: 1-2 lines with bold values, always including Employee ID when naming anyone.
+- If asking to draft a letter/email/request: Include ${employeeName} (${empCode}) and appropriate manager/HR names with their Employee IDs.
 - No data found: Use "ℹ️ **No Information Found**".
 - Prohibited/secret requests: Use "🔒 **Security Notice**".
 
