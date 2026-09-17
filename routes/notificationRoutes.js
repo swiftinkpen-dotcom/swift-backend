@@ -284,4 +284,137 @@ router.post('/send-push', async (req, res) => {
   }
 });
 
+/**
+ * Dispatches WhatsApp-style high priority push notification for Team Chat messages
+ */
+async function sendTeamChatPush({
+  tenantId,
+  groupId,
+  groupSubject,
+  senderId,
+  senderName,
+  text,
+  members = [],
+}) {
+  try {
+    if (!groupId || !text) return { success: false, reason: 'Missing groupId or text' };
+
+    const tokens = loadTokens();
+    let recipientTokens = [];
+
+    // 1. Identify recipient member IDs (exclude sender)
+    const recipientMemberIds = new Set();
+
+    if (Array.isArray(members) && members.length > 0) {
+      members.forEach((m) => {
+        const mId = typeof m === 'string' ? m : (m.id || m.empCode);
+        if (mId && String(mId) !== String(senderId)) {
+          recipientMemberIds.add(String(mId));
+        }
+      });
+    }
+
+    // 2. Gather device tokens for recipients
+    recipientMemberIds.forEach((empId) => {
+      if (tokens[empId] && Array.isArray(tokens[empId])) {
+        tokens[empId].forEach((t) => {
+          recipientTokens.push(typeof t === 'string' ? t : t.token);
+        });
+      }
+    });
+
+    // Fallback: If only testing or single device registered under mobile_user, and mobile_user is not the sender
+    if (recipientTokens.length === 0 && tokens['mobile_user'] && senderId !== 'mobile_user') {
+      tokens['mobile_user'].forEach((t) => {
+        recipientTokens.push(typeof t === 'string' ? t : t.token);
+      });
+    }
+
+    // Fallback: If still no tokens but we have registered devices (e.g. multi-user testing on same devices)
+    if (recipientTokens.length === 0) {
+      Object.keys(tokens).forEach((empKey) => {
+        if (String(empKey) !== String(senderId) && Array.isArray(tokens[empKey])) {
+          tokens[empKey].forEach((t) => {
+            recipientTokens.push(typeof t === 'string' ? t : t.token);
+          });
+        }
+      });
+    }
+
+    // De-duplicate tokens
+    recipientTokens = Array.from(new Set(recipientTokens)).filter(Boolean);
+
+    if (recipientTokens.length === 0) {
+      console.log(`[TeamChat Push] No registered device tokens found for group ${groupId}`);
+      return { success: true, deliveredCount: 0, reason: 'No device tokens' };
+    }
+
+    const fcm = getFirebaseAdmin();
+    if (!fcm) {
+      console.warn('[TeamChat Push] Firebase Admin SDK not initialized (check firebase-service-account.json)');
+      return { success: false, reason: 'Firebase Admin not initialized' };
+    }
+
+    const safeSubject = String(groupSubject || 'Team Chat');
+    const safeSender = String(senderName || 'Colleague');
+    const safeText = String(text || '').trim();
+
+    // WhatsApp format:
+    // Title: Group Subject (e.g., "Engineering Team 🚀")
+    // Body: "Sender Name: Message text..."
+    const title = safeSubject;
+    const body = `${safeSender}: ${safeText}`;
+
+    const message = {
+      notification: {
+        title,
+        body,
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'swift_high_importance_channel',
+          priority: 'high',
+          sound: 'default',
+          defaultSound: true,
+          defaultVibrateTimings: true,
+          tag: String(groupId), // Groups notifications by group like WhatsApp
+          visibility: 'public',
+          clickAction: 'OPEN_TEAM_CHAT',
+        },
+      },
+      data: {
+        type: 'team_chat_message',
+        groupId: String(groupId),
+        groupSubject: safeSubject,
+        senderId: String(senderId || ''),
+        senderName: safeSender,
+        text: safeText,
+        tenantId: String(tenantId || 'swift'),
+        timestamp: String(Date.now()),
+      },
+      tokens: recipientTokens,
+    };
+
+    const response = await fcm.messaging.sendEachForMulticast(message);
+    console.log(
+      `[TeamChat Push] Multicast dispatched for "${safeSubject}": ${response.successCount} succeeded, ${response.failureCount} failed out of ${recipientTokens.length} devices.`
+    );
+
+    return {
+      success: true,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+    };
+  } catch (err) {
+    console.error('[TeamChat Push] Error sending push:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+router.sendTeamChatPush = sendTeamChatPush;
+router.loadTokens = loadTokens;
+router.getFirebaseAdmin = getFirebaseAdmin;
+
 module.exports = router;
+
