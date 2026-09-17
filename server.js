@@ -6089,12 +6089,16 @@ async function startServer() {
             }));
 
             // Update group last message preview in DynamoDB
+            let groupSubject = "Team Chat";
+            let groupMembers = [];
             try {
               const grpRes = await ddb.send(new GetCommand({
                 TableName: COMPANY_TABLES.teamGroups,
                 Key: { tenantId: tenantId || "swift", id: groupId },
               }));
               if (grpRes.Item) {
+                groupSubject = grpRes.Item.subject || "Team Chat";
+                groupMembers = grpRes.Item.members || [];
                 const updatedGrp = {
                   ...grpRes.Item,
                   lastMessageText: text.trim(),
@@ -6124,11 +6128,11 @@ async function startServer() {
                 notificationRoutes.sendTeamChatPush({
                   tenantId: tenantId || "swift",
                   groupId,
-                  groupSubject: grpRes?.Item?.subject || "Team Chat",
+                  groupSubject,
                   senderId,
                   senderName: senderName || "Colleague",
                   text: text.trim(),
-                  members: grpRes?.Item?.members || [],
+                  members: groupMembers,
                 }).catch((pushErr) => console.warn("[WS TeamChat Push Warning]:", pushErr.message));
               }
             } catch (pushErr) {

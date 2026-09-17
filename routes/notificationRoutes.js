@@ -307,9 +307,17 @@ async function sendTeamChatPush({
 
     if (Array.isArray(members) && members.length > 0) {
       members.forEach((m) => {
-        const mId = typeof m === 'string' ? m : (m.id || m.empCode);
-        if (mId && String(mId) !== String(senderId)) {
-          recipientMemberIds.add(String(mId));
+        if (!m) return;
+        if (typeof m === 'string') {
+          if (String(m) !== String(senderId)) {
+            recipientMemberIds.add(String(m));
+          }
+        } else {
+          const ids = [m.id, m.empCode, m.employeeId, m.userId, m._id].filter(Boolean);
+          const isSender = ids.some((id) => String(id) === String(senderId));
+          if (!isSender) {
+            ids.forEach((id) => recipientMemberIds.add(String(id)));
+          }
         }
       });
     }
@@ -330,10 +338,23 @@ async function sendTeamChatPush({
       });
     }
 
-    // Fallback: If still no tokens but we have registered devices (e.g. multi-user testing on same devices)
+    // Fallback 1: If still no tokens, gather all other registered devices (excluding sender)
     if (recipientTokens.length === 0) {
       Object.keys(tokens).forEach((empKey) => {
         if (String(empKey) !== String(senderId) && Array.isArray(tokens[empKey])) {
+          tokens[empKey].forEach((t) => {
+            recipientTokens.push(typeof t === 'string' ? t : t.token);
+          });
+        }
+      });
+    }
+
+    // Fallback 2: If still 0 and only the sender's device is registered (single-device developer testing),
+    // permit dispatch so the developer can see and test the in-app banner immediately
+    if (recipientTokens.length === 0 && Object.keys(tokens).length > 0) {
+      console.log('[TeamChat Push] Solo test mode: sending push to registered test device for verification');
+      Object.keys(tokens).forEach((empKey) => {
+        if (Array.isArray(tokens[empKey])) {
           tokens[empKey].forEach((t) => {
             recipientTokens.push(typeof t === 'string' ? t : t.token);
           });
