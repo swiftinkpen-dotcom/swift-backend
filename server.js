@@ -5515,14 +5515,30 @@ app.get("/api/attendance/auto-close-missed-checkouts/status", (req, res) => {
 // ==========================================
 const connectedClients = new Map(); // ws => { tenantId, employeeId, groupId }
 
-function broadcastToGroup(groupId, eventData) {
+function broadcastToGroup(groupId, eventData, groupMembers = []) {
   const payload = JSON.stringify(eventData);
+  const memberIdSet = new Set(
+    (Array.isArray(groupMembers) ? groupMembers : []).map((m) => {
+      if (!m) return "";
+      if (typeof m === "string") return String(m);
+      return String(m.id || m.empCode || m.employeeId || m.userId || "");
+    }).filter(Boolean)
+  );
+
   for (const [ws, client] of connectedClients.entries()) {
-    if (ws.readyState === 1 && (client.groupId === groupId || !client.groupId)) {
-      try {
-        ws.send(payload);
-      } catch (err) {
-        console.warn("[WS Broadcast error]:", err.message);
+    if (ws.readyState === 1) {
+      const isViewingGroup = client.groupId === groupId;
+      const isDesignatedMember = memberIdSet.size > 0
+        ? (client.employeeId && memberIdSet.has(String(client.employeeId)))
+        : true;
+
+      // Only send if the client is either viewing this group OR is a designated member not in another group
+      if (isViewingGroup || (isDesignatedMember && !client.groupId)) {
+        try {
+          ws.send(payload);
+        } catch (err) {
+          console.warn("[WS Broadcast error]:", err.message);
+        }
       }
     }
   }
@@ -5554,7 +5570,11 @@ app.get("/api/team-chat/groups", async (req, res) => {
     const userGroups = allGroups.filter((g) => {
       if (!employeeId) return true;
       if (g.creatorId === employeeId) return true;
-      if (Array.isArray(g.members) && g.members.some((m) => m.id === employeeId || m.empCode === employeeId)) return true;
+      if (Array.isArray(g.members) && g.members.some((m) => {
+        if (!m) return false;
+        if (typeof m === 'string') return m === employeeId;
+        return m.id === employeeId || m.empCode === employeeId || m.employeeId === employeeId || m.userId === employeeId;
+      })) return true;
       return false;
     });
 
@@ -5567,37 +5587,84 @@ app.get("/api/team-chat/groups", async (req, res) => {
   }
 });
 
-// 2. Fetch Messages for Group
+// 2. Fetch Messages for Group (with pagination & cursor support)
 app.get("/api/team-chat/messages", async (req, res) => {
-  const { tenantId, groupId } = req.query;
+  const { tenantId, groupId, limit, before } = req.query;
   if (!tenantId || !groupId) {
     return res.status(400).json({ error: "Missing required parameters: tenantId, groupId" });
   }
 
   try {
     const allMessages = await getTenantItems(COMPANY_TABLES.teamMessages, tenantId);
-    const groupMsgs = allMessages
+    let groupMsgs = allMessages
       .filter((m) => m.groupId === groupId)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
-    res.json({ success: true, messages: groupMsgs });
+    if (before) {
+      const beforeTime = new Date(before).getTime();
+      groupMsgs = groupMsgs.filter((m) => new Date(m.createdAt).getTime() < beforeTime);
+    }
+
+    const pageSize = parseInt(limit, 10) || 50;
+    const hasMore = groupMsgs.length > pageSize;
+    // Return latest slice up to pageSize
+    const slicedMsgs = groupMsgs.slice(-pageSize);
+
+    res.json({ success: true, messages: slicedMsgs, hasMore, totalCount: groupMsgs.length });
   } catch (err) {
     console.error("[TeamChat] Error fetching messages:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
+// Search Messages within Group
+app.get("/api/team-chat/search", async (req, res) => {
+  const { tenantId, groupId, q } = req.query;
+  if (!groupId || !q || !q.trim()) {
+    return res.status(400).json({ error: "Missing required parameters: groupId, q" });
+  }
+
+  try {
+    const allMessages = await getTenantItems(COMPANY_TABLES.teamMessages, tenantId || "swift");
+    const query = q.trim().toLowerCase();
+    const matches = allMessages
+      .filter((m) => m.groupId === groupId && !m.isDeleted && typeof m.text === "string" && m.text.toLowerCase().includes(query))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 50);
+
+    res.json({ success: true, results: matches });
+  } catch (err) {
+    console.error("[TeamChat] Error searching messages:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Send message via REST API (with live push notification & WebSocket broadcast)
 app.post("/api/team-chat/send", async (req, res) => {
-  const { tenantId, groupId, senderId, senderName, text, time } = req.body;
-  if (!groupId || !text) {
-    return res.status(400).json({ error: "Missing required parameters: groupId, text" });
+  const {
+    tenantId,
+    groupId,
+    senderId,
+    senderName,
+    text,
+    time,
+    mediaType,
+    mediaUrl,
+    fileName,
+    fileSize,
+    replyTo,
+    clientMessageId,
+  } = req.body;
+
+  if (!groupId || (!text && !mediaUrl)) {
+    return res.status(400).json({ error: "Missing required parameters: groupId, and text or mediaUrl" });
   }
 
   try {
     const now = new Date().toISOString();
     const timeNow = time || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const msgId = req.body.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const effectiveText = text ? text.trim() : (fileName || (mediaType ? `[${mediaType.toUpperCase()}]` : 'Attachment'));
 
     const newMsgItem = {
       tenantId: tenantId || "swift",
@@ -5605,9 +5672,15 @@ app.post("/api/team-chat/send", async (req, res) => {
       groupId,
       senderId,
       senderName: senderName || "Colleague",
-      text: text.trim(),
+      text: effectiveText,
       time: timeNow,
       createdAt: now,
+      ...(clientMessageId ? { clientMessageId } : {}),
+      ...(replyTo ? { replyTo } : {}),
+      ...(mediaType ? { mediaType } : {}),
+      ...(mediaUrl ? { mediaUrl } : {}),
+      ...(fileName ? { fileName } : {}),
+      ...(fileSize ? { fileSize } : {}),
     };
 
     // Save to DynamoDB
@@ -5629,7 +5702,7 @@ app.post("/api/team-chat/send", async (req, res) => {
         groupMembers = grpRes.Item.members || [];
         const updatedGrp = {
           ...grpRes.Item,
-          lastMessageText: text.trim(),
+          lastMessageText: effectiveText,
           lastMessageTime: timeNow,
           lastMessageSender: senderName || "Colleague",
           updatedAt: now,
@@ -5643,12 +5716,16 @@ app.post("/api/team-chat/send", async (req, res) => {
       console.warn("[REST Group Preview Update Error]:", grpErr.message);
     }
 
-    // Broadcast to WebSocket clients
-    broadcastToGroup(groupId, {
-      type: "new_message",
+    // Broadcast to WebSocket clients (only to designated group members)
+    broadcastToGroup(
       groupId,
-      message: newMsgItem,
-    });
+      {
+        type: "new_message",
+        groupId,
+        message: newMsgItem,
+      },
+      groupMembers
+    );
 
     // Push notification to devices
     if (notificationRoutes && typeof notificationRoutes.sendTeamChatPush === "function") {
@@ -5658,7 +5735,7 @@ app.post("/api/team-chat/send", async (req, res) => {
         groupSubject,
         senderId,
         senderName: senderName || "Colleague",
-        text: text.trim(),
+        text: effectiveText,
         members: groupMembers,
       }).catch((pushErr) => console.warn("[TeamChat Push Warning]:", pushErr.message));
     }
@@ -5666,6 +5743,126 @@ app.post("/api/team-chat/send", async (req, res) => {
     res.json({ success: true, message: newMsgItem });
   } catch (err) {
     console.error("[TeamChat] Error sending message via REST:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Edit message (only sender authorized)
+app.post("/api/team-chat/edit", async (req, res) => {
+  const { tenantId, groupId, messageId, newText, userId } = req.body;
+  if (!groupId || !messageId || !newText || !newText.trim()) {
+    return res.status(400).json({ error: "Missing required parameters: groupId, messageId, newText" });
+  }
+
+  try {
+    const allMessages = await getTenantItems(COMPANY_TABLES.teamMessages, tenantId || "swift");
+    const targetMsg = allMessages.find((m) => m.id === messageId);
+    if (!targetMsg) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+
+    if (userId && targetMsg.senderId !== userId) {
+      return res.status(403).json({ error: "Unauthorized: You can only edit your own messages" });
+    }
+
+    const now = new Date().toISOString();
+    const updatedMsg = {
+      ...targetMsg,
+      text: newText.trim(),
+      isEdited: true,
+      editedAt: now,
+      updatedAt: now,
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.teamMessages,
+      Item: updatedMsg,
+    }));
+
+    // Broadcast edit to group
+    broadcastToGroup(groupId, {
+      type: "message_edited",
+      groupId,
+      messageId,
+      newText: newText.trim(),
+      isEdited: true,
+      editedAt: now,
+    });
+
+    res.json({ success: true, message: updatedMsg });
+  } catch (err) {
+    console.error("[TeamChat] Error editing message:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete message (Delete for me OR Delete for everyone)
+app.post("/api/team-chat/delete", async (req, res) => {
+  const { tenantId, groupId, messageId, userId, deleteForEveryone } = req.body;
+  if (!groupId || !messageId || !userId) {
+    return res.status(400).json({ error: "Missing required parameters: groupId, messageId, userId" });
+  }
+
+  try {
+    const allMessages = await getTenantItems(COMPANY_TABLES.teamMessages, tenantId || "swift");
+    const targetMsg = allMessages.find((m) => m.id === messageId);
+    if (!targetMsg) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+
+    const now = new Date().toISOString();
+
+    if (deleteForEveryone) {
+      if (targetMsg.senderId !== userId) {
+        return res.status(403).json({ error: "Unauthorized: You can only delete your own messages for everyone" });
+      }
+
+      const updatedMsg = {
+        ...targetMsg,
+        text: "This message was deleted",
+        isDeleted: true,
+        deletedAt: now,
+        mediaUrl: null,
+        mediaType: null,
+        updatedAt: now,
+      };
+
+      await ddb.send(new PutCommand({
+        TableName: COMPANY_TABLES.teamMessages,
+        Item: updatedMsg,
+      }));
+
+      broadcastToGroup(groupId, {
+        type: "message_deleted",
+        groupId,
+        messageId,
+        deleteForEveryone: true,
+        text: "This message was deleted",
+        isDeleted: true,
+      });
+
+      return res.json({ success: true, message: updatedMsg });
+    } else {
+      // Delete for me
+      const deletedFor = Array.isArray(targetMsg.deletedForUserIds) ? [...targetMsg.deletedForUserIds] : [];
+      if (!deletedFor.includes(userId)) {
+        deletedFor.push(userId);
+      }
+
+      const updatedMsg = {
+        ...targetMsg,
+        deletedForUserIds: deletedFor,
+      };
+
+      await ddb.send(new PutCommand({
+        TableName: COMPANY_TABLES.teamMessages,
+        Item: updatedMsg,
+      }));
+
+      return res.json({ success: true, deletedForMe: true });
+    }
+  } catch (err) {
+    console.error("[TeamChat] Error deleting message:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -5937,6 +6134,19 @@ app.post("/api/team-chat/groups/delete", async (req, res) => {
       Key: { tenantId, id: groupId },
     }));
 
+    // If there is an associated pending approval request, clean it up
+    if (existing.Item.requestId) {
+      try {
+        await ddb.send(new DeleteCommand({
+          TableName: COMPANY_TABLES.requests,
+          Key: { tenantId, id: existing.Item.requestId },
+        }));
+        console.log(`[TeamChat] Cleaned up associated request: ${existing.Item.requestId}`);
+      } catch (reqErr) {
+        console.warn("[TeamChat] Error deleting associated request:", reqErr.message);
+      }
+    }
+
     // Broadcast group_deleted event to tenant & group clients via WebSocket
     broadcastToTenant(tenantId, {
       type: "group_deleted",
@@ -6065,11 +6275,12 @@ async function startServer() {
             });
             ws.send(JSON.stringify({ type: "joined", groupId: msg.groupId }));
           } else if (msg.type === "send_message") {
-            const { tenantId, groupId, senderId, senderName, text, time } = msg;
-            if (!groupId || !text) return;
+            const { tenantId, groupId, senderId, senderName, text, time, mediaType, mediaUrl, fileName, fileSize } = msg;
+            if (!groupId || (!text && !mediaUrl)) return;
             const now = new Date().toISOString();
             const timeNow = time || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
             const msgId = msg.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+            const effectiveText = text ? text.trim() : (fileName || (mediaType ? `[${mediaType.toUpperCase()}]` : 'Attachment'));
 
             const newMsgItem = {
               tenantId: tenantId || "swift",
@@ -6077,9 +6288,13 @@ async function startServer() {
               groupId,
               senderId,
               senderName,
-              text: text.trim(),
+              text: effectiveText,
               time: timeNow,
               createdAt: now,
+              ...(mediaType ? { mediaType } : {}),
+              ...(mediaUrl ? { mediaUrl } : {}),
+              ...(fileName ? { fileName } : {}),
+              ...(fileSize ? { fileSize } : {}),
             };
 
             // Save message to DynamoDB
@@ -6101,7 +6316,7 @@ async function startServer() {
                 groupMembers = grpRes.Item.members || [];
                 const updatedGrp = {
                   ...grpRes.Item,
-                  lastMessageText: text.trim(),
+                  lastMessageText: effectiveText,
                   lastMessageTime: timeNow,
                   lastMessageSender: senderName,
                   updatedAt: now,
@@ -6116,11 +6331,15 @@ async function startServer() {
             }
 
             // Broadcast message in real-time to group participants
-            broadcastToGroup(groupId, {
-              type: "new_message",
+            broadcastToGroup(
               groupId,
-              message: newMsgItem,
-            });
+              {
+                type: "new_message",
+                groupId,
+                message: newMsgItem,
+              },
+              groupMembers
+            );
 
             // Dispatch WhatsApp-style Push Notification to all group members
             try {
@@ -6131,7 +6350,7 @@ async function startServer() {
                   groupSubject,
                   senderId,
                   senderName: senderName || "Colleague",
-                  text: text.trim(),
+                  text: (text || '').trim() || (fileName || (mediaType ? `[${mediaType.toUpperCase()}]` : 'Attachment')),
                   members: groupMembers,
                 }).catch((pushErr) => console.warn("[WS TeamChat Push Warning]:", pushErr.message));
               }
@@ -6177,6 +6396,38 @@ async function startServer() {
               }
             } catch (err) {
               console.warn("[WS Mark Read Error]:", err.message);
+            }
+          } else if (msg.type === "typing_start") {
+            const { groupId, userId, userName } = msg;
+            if (groupId && userId) {
+              broadcastToGroup(groupId, {
+                type: "user_typing",
+                groupId,
+                userId,
+                userName: userName || "Someone",
+                isTyping: true,
+              });
+            }
+          } else if (msg.type === "typing_stop") {
+            const { groupId, userId, userName } = msg;
+            if (groupId && userId) {
+              broadcastToGroup(groupId, {
+                type: "user_typing",
+                groupId,
+                userId,
+                userName: userName || "Someone",
+                isTyping: false,
+              });
+            }
+          } else if (msg.type === "presence") {
+            const { tenantId, userId, isOnline } = msg;
+            if (userId) {
+              broadcastToTenant(tenantId || "swift", {
+                type: "presence_update",
+                userId,
+                isOnline: !!isOnline,
+                lastSeen: new Date().toISOString(),
+              });
             }
           } else if (msg.type === "ping") {
             ws.send(JSON.stringify({ type: "pong" }));
