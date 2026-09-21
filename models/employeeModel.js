@@ -144,6 +144,7 @@ class EmployeeModel {
         ...existing,
         name: shouldUpdateName ? cleanName : existing.name,
         cardNo: cleanCardNo,
+        employmentType: existing.employmentType || "regular",
         updatedAt: now,
       };
 
@@ -167,6 +168,7 @@ class EmployeeModel {
       department: department || "Operations",
       designation: designation || "Staff",
       cardNo: cardNo && cardNo !== "0" ? String(cardNo).trim() : null,
+      employmentType: "regular",
       status: "active",
       createdAt: now,
       updatedAt: now,
