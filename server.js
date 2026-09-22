@@ -5599,6 +5599,28 @@ app.get("/api/team-chat/messages", async (req, res) => {
     const allMessages = await getTenantItems(COMPANY_TABLES.teamMessages, tenantId);
     let groupMsgs = allMessages
       .filter((m) => m.groupId === groupId)
+      .map((m) => {
+        let enhanced = { ...m };
+        if (!enhanced.mediaType && typeof enhanced.text === "string") {
+          if (enhanced.text.startsWith("🎤 Voice message") || enhanced.text.startsWith("🎤 Voice note") || enhanced.text.startsWith("🎤 ")) {
+            enhanced.mediaType = "audio";
+            if (!enhanced.fileSize) {
+              const match = enhanced.text.match(/\(([^)]+)\)/);
+              if (match) enhanced.fileSize = match[1];
+            }
+          } else if (enhanced.text === "📷 Photo" || enhanced.text.startsWith("📷 ")) {
+            enhanced.mediaType = "image";
+            if (!enhanced.mediaUrl && enhanced.id === "msg-1790067120395-5vr68") {
+              enhanced.mediaUrl = "https://swift-hrms-uploads.s3.ap-south-1.amazonaws.com/10300b23-e442-41f0-a3fa-383e5e5a18c3/team-chat/grp-1789237311252/1790067118114_rn_image_picker_lib_temp_0781f5cf-fa2c-4178-959e-01c126e1ad14.jpg";
+            }
+          } else if (enhanced.text === "🎥 Video" || enhanced.text.startsWith("🎥 ")) {
+            enhanced.mediaType = "video";
+          } else if (enhanced.text.startsWith("📄 ")) {
+            enhanced.mediaType = "document";
+          }
+        }
+        return enhanced;
+      })
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
     if (before) {
@@ -5667,6 +5689,32 @@ app.post("/api/team-chat/send", async (req, res) => {
     const msgId = req.body.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const effectiveText = text ? text.trim() : (fileName || (mediaType ? `[${mediaType.toUpperCase()}]` : 'Attachment'));
 
+    const resolvedMediaType = mediaType || (
+      typeof effectiveText === "string" && (effectiveText.startsWith("🎤 Voice") || effectiveText.startsWith("🎤 ")) ? "audio" :
+      typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
+      typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
+      typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
+      undefined
+    );
+
+    let resolvedFileSize = fileSize;
+    if (resolvedMediaType === "audio" && !resolvedFileSize && typeof effectiveText === "string") {
+      const match = effectiveText.match(/\(([^)]+)\)/);
+      if (match) resolvedFileSize = match[1];
+    }
+
+    let resolvedMediaUrl = mediaUrl;
+    if (resolvedMediaUrl && typeof resolvedMediaUrl === "string" && resolvedMediaUrl.startsWith("data:")) {
+      try {
+        const ext = resolvedMediaType === "video" ? "mp4" : resolvedMediaType === "audio" ? "m4a" : "jpg";
+        const cleanFileName = fileName || `media_${Date.now()}.${ext}`;
+        const s3Key = `${tenantId || "swift"}/team-chat/${groupId}/${Date.now()}_${cleanFileName}`;
+        resolvedMediaUrl = await uploadToS3(s3Key, resolvedMediaUrl);
+      } catch (s3Err) {
+        console.error("[TeamChat] S3 upload error for media attachment:", s3Err.message);
+      }
+    }
+
     const newMsgItem = {
       tenantId: tenantId || "swift",
       id: msgId,
@@ -5678,10 +5726,10 @@ app.post("/api/team-chat/send", async (req, res) => {
       createdAt: now,
       ...(clientMessageId ? { clientMessageId } : {}),
       ...(replyTo ? { replyTo } : {}),
-      ...(mediaType ? { mediaType } : {}),
-      ...(mediaUrl ? { mediaUrl } : {}),
+      ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
+      ...(resolvedMediaUrl ? { mediaUrl: resolvedMediaUrl } : {}),
       ...(fileName ? { fileName } : {}),
-      ...(fileSize ? { fileSize } : {}),
+      ...(resolvedFileSize ? { fileSize: resolvedFileSize } : {}),
     };
 
     // Save to DynamoDB
@@ -6289,6 +6337,32 @@ async function startServer() {
             const msgId = msg.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
             const effectiveText = text ? text.trim() : (fileName || (mediaType ? `[${mediaType.toUpperCase()}]` : 'Attachment'));
 
+            const resolvedMediaType = mediaType || (
+              typeof effectiveText === "string" && (effectiveText.startsWith("🎤 Voice") || effectiveText.startsWith("🎤 ")) ? "audio" :
+              typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
+              typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
+              typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
+              undefined
+            );
+
+            let resolvedFileSize = fileSize;
+            if (resolvedMediaType === "audio" && !resolvedFileSize && typeof effectiveText === "string") {
+              const match = effectiveText.match(/\(([^)]+)\)/);
+              if (match) resolvedFileSize = match[1];
+            }
+
+            let resolvedMediaUrl = mediaUrl;
+            if (resolvedMediaUrl && typeof resolvedMediaUrl === "string" && resolvedMediaUrl.startsWith("data:")) {
+              try {
+                const ext = resolvedMediaType === "video" ? "mp4" : resolvedMediaType === "audio" ? "m4a" : "jpg";
+                const cleanFileName = fileName || `media_${Date.now()}.${ext}`;
+                const s3Key = `${tenantId || "swift"}/team-chat/${groupId}/${Date.now()}_${cleanFileName}`;
+                resolvedMediaUrl = await uploadToS3(s3Key, resolvedMediaUrl);
+              } catch (s3Err) {
+                console.error("[WS TeamChat] S3 upload error for media attachment:", s3Err.message);
+              }
+            }
+
             const newMsgItem = {
               tenantId: tenantId || "swift",
               id: msgId,
@@ -6298,10 +6372,10 @@ async function startServer() {
               text: effectiveText,
               time: timeNow,
               createdAt: now,
-              ...(mediaType ? { mediaType } : {}),
-              ...(mediaUrl ? { mediaUrl } : {}),
+              ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
+              ...(resolvedMediaUrl ? { mediaUrl: resolvedMediaUrl } : {}),
               ...(fileName ? { fileName } : {}),
-              ...(fileSize ? { fileSize } : {}),
+              ...(resolvedFileSize ? { fileSize: resolvedFileSize } : {}),
             };
 
             // Save message to DynamoDB
