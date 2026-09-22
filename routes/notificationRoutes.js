@@ -322,45 +322,15 @@ async function sendTeamChatPush({
       });
     }
 
-    // 2. Gather device tokens for recipients
+    // 2. Gather device tokens ONLY for designated group members (never non-members)
     recipientMemberIds.forEach((empId) => {
       if (tokens[empId] && Array.isArray(tokens[empId])) {
         tokens[empId].forEach((t) => {
-          recipientTokens.push(typeof t === 'string' ? t : t.token);
+          const tok = typeof t === 'string' ? t : t.token;
+          if (tok) recipientTokens.push(tok);
         });
       }
     });
-
-    // Fallback: If only testing or single device registered under mobile_user, and mobile_user is not the sender
-    if (recipientTokens.length === 0 && tokens['mobile_user'] && senderId !== 'mobile_user') {
-      tokens['mobile_user'].forEach((t) => {
-        recipientTokens.push(typeof t === 'string' ? t : t.token);
-      });
-    }
-
-    // Fallback 1: If still no tokens, gather all other registered devices (excluding sender)
-    if (recipientTokens.length === 0) {
-      Object.keys(tokens).forEach((empKey) => {
-        if (String(empKey) !== String(senderId) && Array.isArray(tokens[empKey])) {
-          tokens[empKey].forEach((t) => {
-            recipientTokens.push(typeof t === 'string' ? t : t.token);
-          });
-        }
-      });
-    }
-
-    // Fallback 2: If still 0 and only the sender's device is registered (single-device developer testing),
-    // permit dispatch so the developer can see and test the in-app banner immediately
-    if (recipientTokens.length === 0 && Object.keys(tokens).length > 0) {
-      console.log('[TeamChat Push] Solo test mode: sending push to registered test device for verification');
-      Object.keys(tokens).forEach((empKey) => {
-        if (Array.isArray(tokens[empKey])) {
-          tokens[empKey].forEach((t) => {
-            recipientTokens.push(typeof t === 'string' ? t : t.token);
-          });
-        }
-      });
-    }
 
     // De-duplicate tokens
     recipientTokens = Array.from(new Set(recipientTokens)).filter(Boolean);
