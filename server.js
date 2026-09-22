@@ -5528,12 +5528,13 @@ function broadcastToGroup(groupId, eventData, groupMembers = []) {
   for (const [ws, client] of connectedClients.entries()) {
     if (ws.readyState === 1) {
       const isViewingGroup = client.groupId === groupId;
-      const isDesignatedMember = memberIdSet.size > 0
+      const isAdminClient = client.isAdmin || client.role === "Admin" || client.role === "admin";
+      const isDesignatedMember = isAdminClient || (memberIdSet.size > 0
         ? (client.employeeId && memberIdSet.has(String(client.employeeId)))
-        : true;
+        : true);
 
-      // Only send if the client is either viewing this group OR is a designated member not in another group
-      if (isViewingGroup || (isDesignatedMember && !client.groupId)) {
+      // Send if client is viewing this group OR is a designated member or tenant admin
+      if (isViewingGroup || isDesignatedMember) {
         try {
           ws.send(payload);
         } catch (err) {
@@ -6267,13 +6268,19 @@ async function startServer() {
       ws.on("message", async (data) => {
         try {
           const msg = JSON.parse(data.toString());
-          if (msg.type === "join") {
+          if (msg.type === "join" || msg.type === "register") {
+            const prev = connectedClients.get(ws) || {};
             connectedClients.set(ws, {
-              tenantId: msg.tenantId,
-              employeeId: msg.employeeId,
-              groupId: msg.groupId,
+              ...prev,
+              tenantId: msg.tenantId || prev.tenantId,
+              employeeId: msg.employeeId || prev.employeeId,
+              groupId: msg.groupId !== undefined ? msg.groupId : prev.groupId,
+              isAdmin: !!msg.isAdmin || msg.role === "Admin" || msg.role === "admin" || prev.isAdmin,
+              role: msg.role || prev.role,
             });
-            ws.send(JSON.stringify({ type: "joined", groupId: msg.groupId }));
+            if (msg.type === "join" && msg.groupId) {
+              ws.send(JSON.stringify({ type: "joined", groupId: msg.groupId }));
+            }
           } else if (msg.type === "send_message") {
             const { tenantId, groupId, senderId, senderName, text, time, mediaType, mediaUrl, fileName, fileSize } = msg;
             if (!groupId || (!text && !mediaUrl)) return;
