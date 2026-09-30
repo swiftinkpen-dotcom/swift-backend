@@ -652,7 +652,9 @@ app.get("/api/companies/initial-state", async (req, res) => {
             costCentre: "General",
             holidayCalendar: "India-Standard"
           }
-        ]
+        ],
+        departments: [],
+        designations: []
       };
       companyConfig.grievanceTypes = [
         { id: "grv-missing-punch", name: "Missing Punch (Check-in / Check-out)", description: "Attendance correction ticket when clock-in or out punch was missed.", active: true },
@@ -664,6 +666,11 @@ app.get("/api/companies/initial-state", async (req, res) => {
         { id: "grv-others", name: "Others", description: "General employee grievances and feedback requests.", active: true },
       ];
       await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.config, Item: companyConfig }));
+    }
+
+    if (companyConfig) {
+      if (!Array.isArray(companyConfig.departments)) companyConfig.departments = [];
+      if (!Array.isArray(companyConfig.designations)) companyConfig.designations = [];
     }
 
     if (companyConfig && (!companyConfig.grievanceTypes || companyConfig.grievanceTypes.length === 0)) {
@@ -1563,7 +1570,16 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
 
       gross = earnedBasic + earnedDA + earnedHRA + earnedOA + earnedCA + earnedLTA + otPay;
 
-      const pf = employee?.pfEligible !== false ? Math.min(1800, Math.round(earnedBasic * 0.12)) : 0;
+      const basicPlusDA = earnedBasic + earnedDA;
+      const empPfPct = company.employeePfPct || company.pfRules?.employeePct || 12;
+      let pf = 0;
+      if (employee?.pfEligible !== false && basicPlusDA > 0) {
+        if (basicPlusDA >= 15000) {
+          pf = 1800;
+        } else {
+          pf = Math.round(basicPlusDA * (empPfPct / 100));
+        }
+      }
       const esi = employee?.esiEligible !== false && fixedGross <= 21000 ? Math.round(gross * 0.0075) : 0;
       const pt = employee?.ptEligible !== false ? (gross > 20000 ? 200 : gross > 15000 ? 150 : 0) : 0;
       const tds = employee?.tdsEligible !== false ? Math.round(gross * 0.05) : 0;
@@ -2837,14 +2853,17 @@ async function processAndSavePunch({ tenantId, employeeId, timestamp, state, pun
     }
   }
 
-  // Calculate duration
+  // Calculate duration and OT
   let hoursWorked = 0;
+  let otHours = 0;
+  const standardHours = 9;
   if (checkIn && checkOut) {
     const [inH, inM] = checkIn.split(":").map(Number);
     const [outH, outM] = checkOut.split(":").map(Number);
     let diffM = (outH * 60 + outM) - (inH * 60 + inM);
     if (diffM < 0) diffM += 24 * 60;
     hoursWorked = Math.round((diffM / 60) * 10) / 10;
+    otHours = hoursWorked > standardHours ? Math.round((hoursWorked - standardHours) * 10) / 10 : 0;
   }
 
   const updatedAttendanceRecord = {
@@ -2862,6 +2881,7 @@ async function processAndSavePunch({ tenantId, employeeId, timestamp, state, pun
     clockIn: checkIn,
     clockOut: checkOut,
     hoursWorked: hoursWorked > 0 ? hoursWorked : (existingRec?.hoursWorked || 0),
+    otHours: otHours > 0 ? otHours : (existingRec?.otHours || 0),
     deviceSerial: deviceSerial || existingRec?.deviceSerial || "BIOMAX-ADMS",
     punchType: punchType || "FINGERPRINT",
     source: "BIOMETRIC_TERMINAL",
