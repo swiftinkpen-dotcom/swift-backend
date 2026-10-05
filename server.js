@@ -3979,12 +3979,16 @@ app.put("/api/tenants/:id", async (req, res) => {
 
 app.post("/api/companies/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required" });
+    const identifier = String(req.body.empCode || req.body.email || "").trim();
+    const password = req.body.password;
+    if (!identifier || !password) {
+      return res.status(400).json({ error: "Employee Code / Email and password are required" });
     }
 
-    if (email === "admin@demo" && password === "demo123") {
+    const searchKey = identifier.toLowerCase();
+
+    // 1. Check demo tenant admin login
+    if ((identifier === "admin@demo" || identifier === "admin@creatonshr.com") && (password === "demo123" || password === "password123")) {
       const demoTenant = {
         id: "demo-tenant-1",
         name: "SWIFT Demo Pvt Ltd",
@@ -3997,35 +4001,218 @@ app.post("/api/companies/login", async (req, res) => {
         created_at: new Date().toISOString()
       };
       return res.json({
-        user: { id: "demo-user-1", email },
+        user: { id: "demo-user-1", email: identifier, name: "Workspace Owner" },
         memberships: [{ tenant_id: "demo-tenant-1", role: "owner", tenant: demoTenant }]
       });
     }
 
-    const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
-    const tenants = scanRes.Items || [];
-    const matchedTenant = tenants.find(t => t.adminEmail === email && t.adminPassword === password);
-
-    if (!matchedTenant) {
-      return res.status(401).json({ error: "Invalid email or password" });
+    // 2. Check demo employees login
+    if ((searchKey === "hr001" || searchKey === "hr@demo.swift" || searchKey === "priya@demo.swift" || searchKey === "hr@demo") && (password === "demo123" || password === "password123")) {
+      const hrEmp = {
+        id: "demo-emp-hr",
+        empCode: "HR001",
+        name: "Priya Iyer",
+        email: "hr@demo.swift",
+        phone: "+91 98765 11223",
+        department: "Human Resources",
+        designation: "HR Manager",
+        roleId: "role-hr-manager",
+        roleName: "HR Manager",
+        status: "active",
+        tenantId: "demo-tenant-1"
+      };
+      const demoTenant = {
+        id: "demo-tenant-1",
+        name: "SWIFT Demo Pvt Ltd",
+        slug: "demo",
+        legal_name: "SWIFT Demo Private Limited",
+        plan: "growth",
+        status: "active",
+        created_at: new Date().toISOString()
+      };
+      return res.json({
+        user: {
+          id: hrEmp.id,
+          empCode: hrEmp.empCode,
+          name: hrEmp.name,
+          email: hrEmp.email,
+          roleId: hrEmp.roleId,
+          roleName: hrEmp.roleName,
+          department: hrEmp.department,
+          designation: hrEmp.designation,
+          isEmployeeLogin: true
+        },
+        employee: hrEmp,
+        memberships: [{ tenant_id: "demo-tenant-1", role: "employee", tenant: demoTenant }]
+      });
     }
 
-    const tenantInfo = {
-      id: matchedTenant.id,
-      name: matchedTenant.name,
-      slug: matchedTenant.slug,
-      legal_name: matchedTenant.legalName || matchedTenant.name,
-      address: matchedTenant.address || null,
-      gstin: matchedTenant.gstin || null,
-      plan: matchedTenant.plan,
-      status: matchedTenant.status,
-      created_at: matchedTenant.createdAt
-    };
+    if ((searchKey === "tl001" || searchKey === "lead@demo.swift" || searchKey === "vikram@demo.swift" || searchKey === "lead@demo") && (password === "demo123" || password === "password123")) {
+      const tlEmp = {
+        id: "demo-emp-tl",
+        empCode: "TL001",
+        name: "Vikram Rao",
+        email: "lead@demo.swift",
+        phone: "+91 98765 99887",
+        department: "Engineering",
+        designation: "Team Lead / Reporting Manager",
+        roleId: "role-team-lead",
+        roleName: "Team Lead / Reporting Manager",
+        status: "active",
+        tenantId: "demo-tenant-1"
+      };
+      const demoTenant = {
+        id: "demo-tenant-1",
+        name: "SWIFT Demo Pvt Ltd",
+        slug: "demo",
+        legal_name: "SWIFT Demo Private Limited",
+        plan: "growth",
+        status: "active",
+        created_at: new Date().toISOString()
+      };
+      return res.json({
+        user: {
+          id: tlEmp.id,
+          empCode: tlEmp.empCode,
+          name: tlEmp.name,
+          email: tlEmp.email,
+          roleId: tlEmp.roleId,
+          roleName: tlEmp.roleName,
+          department: tlEmp.department,
+          designation: tlEmp.designation,
+          isEmployeeLogin: true
+        },
+        employee: tlEmp,
+        memberships: [{ tenant_id: "demo-tenant-1", role: "employee", tenant: demoTenant }]
+      });
+    }
 
-    res.json({
-      user: { id: `user-${matchedTenant.id}`, email },
-      memberships: [{ tenant_id: matchedTenant.id, role: "owner", tenant: tenantInfo }]
+    if ((searchKey === "swf001" || searchKey === "aarav@demo.swift" || searchKey === "aarav@demo") && (password === "demo123" || password === "password123")) {
+      const demoEmp = {
+        id: "demo-emp-1",
+        empCode: "SWF001",
+        name: "Aarav Sharma",
+        email: "aarav@demo.swift",
+        phone: "+91 98765 43210",
+        department: "Engineering",
+        designation: "Senior Engineer",
+        roleId: "role-general-employee",
+        roleName: "General Employee",
+        status: "active",
+        tenantId: "demo-tenant-1"
+      };
+      const demoTenant = {
+        id: "demo-tenant-1",
+        name: "SWIFT Demo Pvt Ltd",
+        slug: "demo",
+        legal_name: "SWIFT Demo Private Limited",
+        plan: "growth",
+        status: "active",
+        created_at: new Date().toISOString()
+      };
+      return res.json({
+        user: {
+          id: demoEmp.id,
+          empCode: demoEmp.empCode,
+          name: demoEmp.name,
+          email: demoEmp.email,
+          roleId: demoEmp.roleId,
+          roleName: demoEmp.roleName,
+          department: demoEmp.department,
+          designation: demoEmp.designation,
+          isEmployeeLogin: true
+        },
+        employee: demoEmp,
+        memberships: [{ tenant_id: "demo-tenant-1", role: "employee", tenant: demoTenant }]
+      });
+    }
+
+    // 3. Check DynamoDB tenants table (tenant admin login)
+    const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+    const tenants = scanRes.Items || [];
+    const matchedTenant = tenants.find(t => t.adminEmail && t.adminEmail.toLowerCase() === searchKey && t.adminPassword === password);
+
+    if (matchedTenant) {
+      const tenantInfo = {
+        id: matchedTenant.id,
+        name: matchedTenant.name,
+        slug: matchedTenant.slug,
+        legal_name: matchedTenant.legalName || matchedTenant.name,
+        address: matchedTenant.address || null,
+        gstin: matchedTenant.gstin || null,
+        plan: matchedTenant.plan,
+        status: matchedTenant.status,
+        created_at: matchedTenant.createdAt
+      };
+
+      return res.json({
+        user: { id: `user-${matchedTenant.id}`, email: identifier, name: matchedTenant.name },
+        memberships: [{ tenant_id: matchedTenant.id, role: "owner", tenant: tenantInfo }]
+      });
+    }
+
+    // 4. Check DynamoDB employees table (employee code / work email login)
+    const empScanRes = await ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.employees }));
+    const allEmployees = empScanRes.Items || [];
+    const matchedEmp = allEmployees.find(e => {
+      const codeMatch = String(e.empCode || "").toLowerCase() === searchKey;
+      const emailMatch = String(e.email || "").toLowerCase() === searchKey;
+      const passMatch = e.password === password || (!e.password && (password === "demo123" || password === "password123"));
+      return (codeMatch || emailMatch) && passMatch;
     });
+
+    if (matchedEmp) {
+      const empStatus = String(matchedEmp.status || "active").toLowerCase().trim();
+      if (empStatus !== "active") {
+        return res.status(403).json({
+          error: `Your account is ${matchedEmp.status}. You are not permitted to log in. Please contact HR.`
+        });
+      }
+
+      // Lookup tenant
+      const empTenantId = matchedEmp.tenantId || "demo-tenant-1";
+      const empTenant = tenants.find(t => t.id === empTenantId);
+      const tenantInfo = empTenant ? {
+        id: empTenant.id,
+        name: empTenant.name,
+        slug: empTenant.slug,
+        legal_name: empTenant.legalName || empTenant.name,
+        address: empTenant.address || null,
+        gstin: empTenant.gstin || null,
+        plan: empTenant.plan,
+        status: empTenant.status,
+        created_at: empTenant.createdAt
+      } : {
+        id: empTenantId,
+        name: "SWIFT HRMS",
+        slug: "company",
+        plan: "growth",
+        status: "active",
+        created_at: new Date().toISOString()
+      };
+
+      return res.json({
+        user: {
+          id: matchedEmp.id,
+          empCode: matchedEmp.empCode,
+          name: matchedEmp.name,
+          email: matchedEmp.email || `${String(matchedEmp.empCode).toLowerCase()}@company.com`,
+          roleId: matchedEmp.roleId,
+          roleName: matchedEmp.roleName,
+          department: matchedEmp.department,
+          designation: matchedEmp.designation,
+          isEmployeeLogin: true
+        },
+        employee: matchedEmp,
+        memberships: [{
+          tenant_id: tenantInfo.id,
+          role: "employee",
+          tenant: tenantInfo
+        }]
+      });
+    }
+
+    return res.status(401).json({ error: "Invalid Employee Code/Email or Password" });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
