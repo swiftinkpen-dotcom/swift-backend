@@ -60,6 +60,18 @@ app.get(["/delete-account", "/account-deletion", "/deleteaccount", "/delete-data
   res.sendFile(path.join(__dirname, "public", "delete-account.html"));
 });
 
+// Mobile App Version Check & Force Update Endpoint
+app.get(["/api/app-version", "/api/app/version"], (req, res) => {
+  const backendVersion = (process.env.APP_VERSION || "1.1").trim();
+  const updateUrl = (process.env.APP_UPDATE_URL || "").trim();
+  res.json({
+    success: true,
+    version: backendVersion,
+    updateUrl: updateUrl,
+    forceUpdate: true,
+  });
+});
+
 // BioMax / eSSL / ZKTeco ADMS & Attendance Cloud Engine
 const biometricRoutes = require("./routes/biometricRoutes");
 app.use(biometricRoutes);
