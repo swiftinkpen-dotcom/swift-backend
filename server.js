@@ -622,8 +622,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
             lat: 11.305639,
             lng: 77.703474,
             weeklyOff: [],
-            wifiSSIDs: [],
-            ipAllowlist: [],
+            allowedBSSIDs: [],
             geofenceDisabled: false,
           }
         ],
@@ -671,6 +670,15 @@ app.get("/api/companies/initial-state", async (req, res) => {
     if (companyConfig) {
       if (!Array.isArray(companyConfig.departments)) companyConfig.departments = [];
       if (!Array.isArray(companyConfig.designations)) companyConfig.designations = [];
+      if (Array.isArray(companyConfig.branches)) {
+        companyConfig.branches = companyConfig.branches.map((b) => {
+          const { wifiSSIDs, ipAllowlist, ...rest } = b;
+          return {
+            ...rest,
+            allowedBSSIDs: Array.isArray(b.allowedBSSIDs) ? b.allowedBSSIDs : [],
+          };
+        });
+      }
     }
 
     if (companyConfig && (!companyConfig.grievanceTypes || companyConfig.grievanceTypes.length === 0)) {
@@ -2460,6 +2468,180 @@ app.post("/api/companies/delete", async (req, res) => {
   }
 });
 
+// --- Dedicated Branch Management Routes ---
+const MAC_ADDRESS_REGEX = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+
+// Fetch Branches
+app.get(["/api/branches", "/api/companies/branches"], async (req, res) => {
+  const { tenantId } = req.query;
+  if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+
+  try {
+    const configRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.config,
+      Key: { tenantId, id: "config" },
+    }));
+    const rawBranches = configRes.Item?.branches || [];
+    const branches = rawBranches.map((b) => {
+      const { wifiSSIDs, ipAllowlist, ...rest } = b;
+      return {
+        ...rest,
+        allowedBSSIDs: Array.isArray(b.allowedBSSIDs) ? b.allowedBSSIDs : [],
+      };
+    });
+    res.json({ success: true, branches });
+  } catch (error) {
+    console.error("[Branches] GET error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create Branch
+app.post(["/api/branches", "/api/companies/branches"], async (req, res) => {
+  const { tenantId, branch, ...rootBranchData } = req.body;
+  if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+
+  const inputBranch = branch || rootBranchData;
+  if (!inputBranch || !inputBranch.name) {
+    return res.status(400).json({ error: "Branch name is required" });
+  }
+
+  // MAC validation
+  if (inputBranch.allowedBSSIDs && Array.isArray(inputBranch.allowedBSSIDs)) {
+    for (const mac of inputBranch.allowedBSSIDs) {
+      if (!MAC_ADDRESS_REGEX.test(mac)) {
+        return res.status(400).json({ error: `Invalid MAC address format: "${mac}". Expected format: 00:1A:2B:3C:4D:5E` });
+      }
+    }
+  }
+
+  try {
+    const configRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.config,
+      Key: { tenantId, id: "config" },
+    }));
+    const currentConfig = configRes.Item || { tenantId, id: "config", branches: [] };
+    const currentBranches = Array.isArray(currentConfig.branches) ? currentConfig.branches : [];
+
+    const { wifiSSIDs, ipAllowlist, ...cleanBranch } = inputBranch;
+    const newBranch = {
+      ...cleanBranch,
+      id: cleanBranch.id || `br-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      allowedBSSIDs: Array.isArray(cleanBranch.allowedBSSIDs)
+        ? cleanBranch.allowedBSSIDs.map((m) => String(m).trim().toUpperCase())
+        : [],
+    };
+
+    const updatedBranches = [...currentBranches, newBranch];
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.config,
+      Item: {
+        ...currentConfig,
+        branches: updatedBranches,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+
+    res.json({ success: true, branch: newBranch });
+  } catch (error) {
+    console.error("[Branches] POST error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Edit Branch
+app.put(["/api/branches/:id", "/api/companies/branches/:id"], async (req, res) => {
+  const { id } = req.params;
+  const { tenantId, branch, ...rootBranchData } = req.body;
+  if (!tenantId || !id) return res.status(400).json({ error: "tenantId and branch id required" });
+
+  const patchData = branch || rootBranchData;
+
+  // MAC validation if allowedBSSIDs is supplied
+  if (patchData.allowedBSSIDs && Array.isArray(patchData.allowedBSSIDs)) {
+    for (const mac of patchData.allowedBSSIDs) {
+      if (!MAC_ADDRESS_REGEX.test(mac)) {
+        return res.status(400).json({ error: `Invalid MAC address format: "${mac}". Expected format: 00:1A:2B:3C:4D:5E` });
+      }
+    }
+  }
+
+  try {
+    const configRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.config,
+      Key: { tenantId, id: "config" },
+    }));
+    const currentConfig = configRes.Item || { tenantId, id: "config", branches: [] };
+    const currentBranches = Array.isArray(currentConfig.branches) ? currentConfig.branches : [];
+
+    const existingIndex = currentBranches.findIndex((b) => b.id === id);
+    if (existingIndex === -1) {
+      return res.status(404).json({ error: `Branch "${id}" not found` });
+    }
+
+    const { wifiSSIDs, ipAllowlist, ...cleanPatch } = patchData;
+    const existing = currentBranches[existingIndex];
+    const { wifiSSIDs: _w, ipAllowlist: _ip, ...cleanExisting } = existing;
+
+    const updatedBranch = {
+      ...cleanExisting,
+      ...cleanPatch,
+      id,
+      allowedBSSIDs: Array.isArray(cleanPatch.allowedBSSIDs)
+        ? cleanPatch.allowedBSSIDs.map((m) => String(m).trim().toUpperCase())
+        : (Array.isArray(existing.allowedBSSIDs) ? existing.allowedBSSIDs : []),
+    };
+
+    currentBranches[existingIndex] = updatedBranch;
+
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.config,
+      Item: {
+        ...currentConfig,
+        branches: currentBranches,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+
+    res.json({ success: true, branch: updatedBranch });
+  } catch (error) {
+    console.error("[Branches] PUT error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete Branch
+app.delete(["/api/branches/:id", "/api/companies/branches/:id"], async (req, res) => {
+  const { id } = req.params;
+  const tenantId = req.query.tenantId || req.body?.tenantId;
+  if (!tenantId || !id) return res.status(400).json({ error: "tenantId and branch id required" });
+
+  try {
+    const configRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.config,
+      Key: { tenantId, id: "config" },
+    }));
+    const currentConfig = configRes.Item || { tenantId, id: "config", branches: [] };
+    const currentBranches = Array.isArray(currentConfig.branches) ? currentConfig.branches : [];
+
+    const updatedBranches = currentBranches.filter((b) => b.id !== id);
+
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.config,
+      Item: {
+        ...currentConfig,
+        branches: updatedBranches,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+
+    res.json({ success: true, deletedId: id });
+  } catch (error) {
+    console.error("[Branches] DELETE error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 4. File Upload Endpoint
 app.post("/api/companies/upload", async (req, res) => {
   const { tenantId, path, fileDataUrl } = req.body;
@@ -3133,6 +3315,97 @@ app.post("/api/attendance/punch", async (req, res) => {
     res.json({ success: true, record });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Mobile Attendance Office Wi-Fi BSSID Fallback Verification Endpoint
+app.post("/api/attendance/verify-wifi", async (req, res) => {
+  const { tenantId, employeeId, branchId, clientLocationId, connectedBSSID } = req.body;
+  const effectiveTenantId = tenantId || "demo-tenant-1";
+  const targetBranchId = branchId || clientLocationId;
+
+  if (!connectedBSSID || typeof connectedBSSID !== "string") {
+    return res.status(400).json({
+      success: false,
+      verified: false,
+      error: "connectedBSSID is required as a valid MAC address string",
+    });
+  }
+
+  const MAC_REGEX = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+  const cleanBSSID = connectedBSSID.trim().toUpperCase().replace(/-/g, ":");
+  if (!MAC_REGEX.test(cleanBSSID)) {
+    return res.status(400).json({
+      success: false,
+      verified: false,
+      error: `Invalid BSSID / MAC address format: "${connectedBSSID}". Format should be 00:1A:2B:3C:4D:5E`,
+    });
+  }
+
+  try {
+    const configRes = await ddb.send(
+      new GetCommand({
+        TableName: COMPANY_TABLES.config,
+        Key: { tenantId: effectiveTenantId, id: "config" },
+      })
+    );
+
+    const branches = configRes.Item?.branches || [];
+
+    let matchedBranch = null;
+    if (targetBranchId) {
+      matchedBranch = branches.find((b) => b.id === targetBranchId);
+    }
+
+    if (!matchedBranch) {
+      matchedBranch = branches.find((b) => {
+        const allowed = Array.isArray(b.allowedBSSIDs)
+          ? b.allowedBSSIDs.map((m) => String(m).trim().toUpperCase().replace(/-/g, ":"))
+          : [];
+        return allowed.includes(cleanBSSID);
+      });
+    }
+
+    if (!matchedBranch && branches.length > 0) {
+      matchedBranch = branches[0];
+    }
+
+    if (!matchedBranch) {
+      return res.status(404).json({
+        success: false,
+        verified: false,
+        error: "Target office branch location could not be determined.",
+      });
+    }
+
+    const allowedBSSIDs = Array.isArray(matchedBranch.allowedBSSIDs)
+      ? matchedBranch.allowedBSSIDs.map((m) => String(m).trim().toUpperCase().replace(/-/g, ":"))
+      : [];
+
+    const isMatch = allowedBSSIDs.includes(cleanBSSID);
+
+    if (isMatch) {
+      console.log(`[VerifyWifi] SUCCESS: Emp ${employeeId || 'unknown'} matched BSSID ${cleanBSSID} at ${matchedBranch.name}`);
+      return res.json({
+        success: true,
+        verified: true,
+        branchId: matchedBranch.id,
+        branchName: matchedBranch.name,
+        connectedBSSID: cleanBSSID,
+        message: `Wi-Fi BSSID successfully authenticated for ${matchedBranch.name}.`,
+      });
+    } else {
+      console.warn(`[VerifyWifi] MISMATCH: Emp ${employeeId || 'unknown'} tried BSSID ${cleanBSSID} at ${matchedBranch.name}. Allowed:`, allowedBSSIDs);
+      return res.status(403).json({
+        success: false,
+        verified: false,
+        error: "Connected Wi-Fi does not match office router. Please connect to official office Wi-Fi.",
+        branchName: matchedBranch.name,
+      });
+    }
+  } catch (err) {
+    console.error("[VerifyWifi] Error:", err.message);
+    return res.status(500).json({ success: false, verified: false, error: err.message });
   }
 });
 
