@@ -2501,7 +2501,13 @@ app.post("/api/companies/face-register", async (req, res) => {
         DetectionAttributes: ["DEFAULT"],
       });
 
-      await rekognition.send(indexCommand);
+      const indexRes = await rekognition.send(indexCommand);
+      if (!indexRes.FaceRecords || indexRes.FaceRecords.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "No face detected in the photo. Please capture a clear picture of your face.",
+        });
+      }
     }
 
     // Automatically update the employee profile in DynamoDB so changes reflect across Admin & Mobile immediately
@@ -2537,6 +2543,18 @@ app.post("/api/companies/face-register", async (req, res) => {
 
     res.json({ success: true, url: s3Url, faceRegistered: true });
   } catch (error) {
+    if (
+      error.name === "InvalidParameterException" ||
+      (error.message && (
+        error.message.toLowerCase().includes("no faces") ||
+        error.message.toLowerCase().includes("at least one face")
+      ))
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "No face detected in the photo. Please capture a clear picture of your face.",
+      });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -2557,9 +2575,13 @@ app.post("/api/companies/face-verify", async (req, res) => {
     console.warn("[FaceVerify] S3 upload warning:", err.message);
   }
 
-  if (!process.env.AWS_ACCESS_KEY_ID || !photoDataUrl.startsWith("data:")) {
-    // Demo/offline fallback: verify for requested employeeId or fallback to demo-emp-1
+  if (!process.env.AWS_ACCESS_KEY_ID) {
+    // Offline / Demo fallback when AWS is completely unconfigured
     return res.json({ success: true, employeeId: employeeId || "demo-emp-1", similarity: 100, url: s3Url || photoDataUrl });
+  }
+
+  if (!photoDataUrl.startsWith("data:")) {
+    return res.status(400).json({ success: false, reason: "Invalid photo format. Base64 data URL required." });
   }
 
   try {
@@ -2599,7 +2621,20 @@ app.post("/api/companies/face-verify", async (req, res) => {
       res.json({ success: false, reason: "No registered matching face found in Rekognition collection" });
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.warn("[FaceVerify] Error:", error.name, error.message);
+    if (
+      error.name === "InvalidParameterException" ||
+      (error.message && (
+        error.message.toLowerCase().includes("no faces in the image") ||
+        error.message.toLowerCase().includes("at least one face")
+      ))
+    ) {
+      return res.json({
+        success: false,
+        reason: "No face detected in the captured photo. Please position your face clearly in the camera frame.",
+      });
+    }
+    res.status(500).json({ success: false, reason: error.message, error: error.message });
   }
 });
 
