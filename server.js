@@ -422,6 +422,8 @@ const COMPANY_TABLES = {
   requests: "swift_company_requests",
   devices: "swift_company_devices",
   biometricLogs: "swift_company_biometric_logs",
+  biometricMappings: "swift_company_biometric_mappings",
+  biometricDedup: "swift_company_biometric_dedup",
   teamGroups: "swift_company_team_groups",
   teamMessages: "swift_company_team_messages",
 };
