@@ -5,6 +5,7 @@ const EmployeeModel = require("./employeeModel");
 const AttendanceModel = require("./attendanceModel");
 const CompanyModel = require("./companyModel");
 const AdmsService = require("./admsService");
+const BiometricUsbModel = require("./biometricUsbModel");
 
 /**
  * Initializes all required AWS DynamoDB tables for the Swift Biometric & Attendance engine
@@ -15,6 +16,7 @@ async function initBiometricDatabase() {
   await DeviceModel.initTable();
   await EmployeeModel.initTable();
   await AttendanceModel.initTable();
+  await BiometricUsbModel.initTable();
   console.log("✅ [AWS DynamoDB] All Biometric Tables initialized successfully.");
 }
 
@@ -25,6 +27,7 @@ module.exports = {
   EmployeeModel,
   AttendanceModel,
   CompanyModel,
+  BiometricUsbModel,
   AdmsService,
   initBiometricDatabase,
 };

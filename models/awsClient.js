@@ -44,6 +44,8 @@ const TABLES = {
   attendance: "swift_company_attendance",
   leaves: "swift_company_leaves",
   roles: "swift_company_roles",
+  biometricMappings: "swift_company_biometric_mappings",
+  biometricDedup: "swift_company_biometric_dedup",
 };
 
 /**
