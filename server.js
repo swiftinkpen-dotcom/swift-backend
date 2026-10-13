@@ -2265,6 +2265,371 @@ app.post("/api/leaves/act", async (req, res) => {
   }
 });
 
+// ==========================================
+// LEAVE & PERMISSION CONFLICT MANAGEMENT SYSTEM
+// ==========================================
+
+const MONTH_NAME_MAP = {
+  jan: '01', january: '01',
+  feb: '02', february: '02',
+  mar: '03', march: '03',
+  apr: '04', april: '04',
+  may: '05',
+  jun: '06', june: '06',
+  jul: '07', july: '07',
+  aug: '08', august: '08',
+  sep: '09', sept: '09', september: '09',
+  oct: '10', october: '10',
+  nov: '11', november: '11',
+  dec: '12', december: '12',
+};
+
+function normalizeDateString(input, isEnd = false) {
+  if (!input) return null;
+  if (input instanceof Date) {
+    if (isNaN(input.getTime())) return null;
+    const y = input.getFullYear();
+    const m = String(input.getMonth() + 1).padStart(2, '0');
+    const d = String(input.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  let str = String(input).trim();
+  if (str.includes('(')) {
+    str = str.split('(')[0].trim();
+  }
+  if (str.includes(' - ')) {
+    const parts = str.split(' - ');
+    str = (isEnd && parts[1]) ? parts[1].trim() : parts[0].trim();
+  }
+  // YYYY-MM-DD
+  const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
+  }
+  // Month DD, YYYY (e.g. Oct 8, 2026 or October 8, 2026)
+  const mdyMatch = str.match(/^([a-zA-Z]+)\s+(\d{1,2}),?\s*(\d{4})/);
+  if (mdyMatch) {
+    const mStr = mdyMatch[1].toLowerCase();
+    const mNum = MONTH_NAME_MAP[mStr];
+    if (mNum) {
+      return `${mdyMatch[3]}-${mNum}-${mdyMatch[2].padStart(2, '0')}`;
+    }
+  }
+  // DD Month YYYY (e.g. 8 Oct 2026 or 08 October 2026)
+  const dmyMatch = str.match(/^(\d{1,2})\s+([a-zA-Z]+),?\s*(\d{4})/);
+  if (dmyMatch) {
+    const mStr = dmyMatch[2].toLowerCase();
+    const mNum = MONTH_NAME_MAP[mStr];
+    if (mNum) {
+      return `${dmyMatch[3]}-${mNum}-${dmyMatch[1].padStart(2, '0')}`;
+    }
+  }
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return null;
+}
+
+function getDatesInRange(startStr, endStr) {
+  const dates = [];
+  if (!startStr) return dates;
+  const sParts = startStr.split('-').map(Number);
+  const eParts = (endStr || startStr).split('-').map(Number);
+  if (sParts.length < 3) return dates;
+
+  const curr = new Date(sParts[0], sParts[1] - 1, sParts[2], 12, 0, 0);
+  const last = new Date(eParts[0], eParts[1] - 1, eParts[2], 12, 0, 0);
+
+  while (curr <= last) {
+    const y = curr.getFullYear();
+    const m = String(curr.getMonth() + 1).padStart(2, '0');
+    const d = String(curr.getDate()).padStart(2, '0');
+    dates.push(`${y}-${m}-${d}`);
+    curr.setDate(curr.getDate() + 1);
+  }
+  return dates;
+}
+
+function isPermissionRecord(item) {
+  if (!item) return false;
+  if (item.requestType === 'permission') return true;
+  const typeStr = String(item.type || item.category || '').toLowerCase();
+  return typeStr.includes('permission') || typeStr.includes('short permission');
+}
+
+function isLeaveRecord(item) {
+  return !isPermissionRecord(item);
+}
+
+function isHalfDayRecord(item) {
+  if (!item) return false;
+  const typeStr = String(item.type || '').toLowerCase();
+  const daysStr = String(item.days || '').toLowerCase();
+  const durationType = String(item.leaveDurationType || '').toLowerCase();
+  return (
+    typeStr.includes('half') ||
+    daysStr.includes('0.5') ||
+    daysStr.includes('half') ||
+    durationType === 'half'
+  );
+}
+
+function getDatesForLeaveRecord(l) {
+  const normStart = normalizeDateString(l.startDate || l.date, false);
+  const normEnd = normalizeDateString(l.endDate || l.startDate || l.date, true);
+  if (!normStart) return [];
+  return getDatesInRange(normStart, normEnd || normStart);
+}
+
+function validateLeavePermissionConflict({
+  tenantId,
+  employeeId,
+  requestType,
+  leaveCategory,
+  leaveDurationType,
+  halfDaySession,
+  startDate,
+  endDate,
+  existingLeaves = [],
+  existingAttendance = [],
+}) {
+  const isRange = leaveDurationType === 'range' || String(startDate || '').includes(' - ') || (endDate && startDate !== endDate && !isPermissionRecord({ requestType }));
+  const normStart = normalizeDateString(startDate, false);
+  const normEnd = isRange ? normalizeDateString(endDate || startDate, true) : normStart;
+
+  if (!normStart) {
+    return {
+      allowed: false,
+      code: 'INVALID_DATE',
+      message: 'Invalid start date provided.',
+      dateResults: []
+    };
+  }
+
+  const normEndFinal = normEnd || normStart;
+  const dateList = getDatesInRange(normStart, normEndFinal);
+  const todayStr = normalizeDateString(new Date(), false);
+
+  const dateResults = [];
+  let overallAllowed = true;
+  let overallMessage = '';
+  let specialExceptionCount = 0;
+  let blockedCount = 0;
+
+  for (const dStr of dateList) {
+    const activeOnDate = existingLeaves.filter((l) => {
+      const st = String(l.status || '').trim().toLowerCase();
+      if (st === 'rejected' || st === 'cancelled' || st === 'superseded') return false;
+      const lDates = getDatesForLeaveRecord(l);
+      return lDates.includes(dStr);
+    });
+
+    const approvedOnDate = activeOnDate.filter((l) => String(l.status || '').trim().toLowerCase() === 'approved');
+    const pendingOnDate = activeOnDate.filter((l) => String(l.status || '').trim().toLowerCase() === 'pending');
+
+    const approvedLeaves = approvedOnDate.filter(isLeaveRecord);
+    const pendingLeaves = pendingOnDate.filter(isLeaveRecord);
+
+    const approvedPermissions = approvedOnDate.filter(isPermissionRecord);
+    const pendingPermissions = pendingOnDate.filter(isPermissionRecord);
+
+    const attRecord = existingAttendance.find((a) => {
+      const attD = normalizeDateString(a.date);
+      return attD === dStr;
+    });
+
+    let attState = 'pending';
+    if (dStr > todayStr) {
+      attState = 'pending';
+    } else if (attRecord) {
+      const attStatus = String(attRecord.status || '').trim().toLowerCase();
+      const hrs = parseFloat(attRecord.hoursWorked) || 0;
+      const hasPunch = Boolean(attRecord.clockIn || attRecord.checkIn);
+
+      if (attStatus === 'absent' || (!hasPunch && hrs === 0 && attStatus !== 'present' && attStatus !== 'late' && attStatus !== 'halfday')) {
+        attState = 'absent';
+      } else if (attStatus === 'present' || attStatus === 'late' || attStatus === 'halfday' || hrs > 0 || hasPunch) {
+        attState = 'worked';
+      } else {
+        attState = 'pending';
+      }
+    } else {
+      attState = 'pending';
+    }
+
+    let dateAllowed = true;
+    let dateCode = 'ALLOWED';
+    let dateMessage = 'Available';
+    let isSpecialException = false;
+
+    if (requestType === 'permission') {
+      if (approvedLeaves.length > 0) {
+        dateAllowed = false;
+        dateCode = 'APPROVED_LEAVE_BLOCKS_PERMISSION';
+        dateMessage = 'Leave is already approved for this date. Permission cannot be applied.';
+      } else if (pendingLeaves.length > 0) {
+        dateAllowed = false;
+        dateCode = 'PENDING_LEAVE_BLOCKS_PERMISSION';
+        dateMessage = 'Leave request is pending for this date. Permission cannot be applied.';
+      } else if (approvedPermissions.length > 0) {
+        dateAllowed = false;
+        dateCode = 'DUPLICATE_PERMISSION_APPROVED';
+        dateMessage = 'Permission is already approved for this date.';
+      } else if (pendingPermissions.length > 0) {
+        dateAllowed = false;
+        dateCode = 'DUPLICATE_PERMISSION_PENDING';
+        dateMessage = 'Permission request is already pending for this date.';
+      }
+    } else {
+      // requestType === 'leave'
+      if (approvedLeaves.length > 0) {
+        dateAllowed = false;
+        dateCode = 'DUPLICATE_LEAVE_APPROVED';
+        dateMessage = 'Leave already approved for this date.';
+      } else if (pendingLeaves.length > 0) {
+        dateAllowed = false;
+        dateCode = 'DUPLICATE_LEAVE_PENDING';
+        dateMessage = 'Leave request is already pending for this date.';
+      } else if (approvedPermissions.length > 0) {
+        if (leaveDurationType === 'half') {
+          dateAllowed = false;
+          dateCode = 'PERMISSION_EXISTS_HALF_DAY_BLOCKED';
+          dateMessage = 'Permission is already approved for this date.';
+        } else {
+          // Full-Day Leave
+          if (attState === 'worked') {
+            dateAllowed = false;
+            dateCode = 'PERMISSION_WORKED_BLOCKS_LEAVE';
+            dateMessage = 'Permission exists, but attendance shows that you worked today. Leave cannot be applied.';
+          } else if (attState === 'absent') {
+            // SPECIAL EXCEPTION — PERMISSION DAY → FULL-DAY LEAVE
+            dateAllowed = true;
+            dateCode = 'SPECIAL_EXCEPTION_ABSENT_ALLOW';
+            dateMessage = 'Permission exists, but no attendance was recorded for the full day. You can apply Leave for this date.';
+            isSpecialException = true;
+            specialExceptionCount++;
+          } else {
+            dateAllowed = false;
+            dateCode = 'ATTENDANCE_PENDING_BLOCKS_LEAVE';
+            dateMessage = 'Attendance for this date is not finalized yet. Leave application will be available after attendance is updated.';
+          }
+        }
+      } else if (pendingPermissions.length > 0) {
+        dateAllowed = false;
+        dateCode = 'PENDING_PERMISSION_BLOCKS_LEAVE';
+        dateMessage = 'Permission request is currently pending for this date. Please cancel or resolve permission request.';
+      }
+    }
+
+    if (!dateAllowed) {
+      overallAllowed = false;
+      blockedCount++;
+    }
+
+    dateResults.push({
+      date: dStr,
+      allowed: dateAllowed,
+      code: dateCode,
+      message: dateMessage,
+      isSpecialException,
+      attState,
+      approvedLeavesCount: approvedLeaves.length,
+      approvedPermissionsCount: approvedPermissions.length
+    });
+  }
+
+  if (!overallAllowed) {
+    const blockedDatesStr = dateResults
+      .filter((r) => !r.allowed)
+      .map((r) => `${r.date}: ${r.message}`)
+      .join(' ');
+    overallMessage = dateList.length === 1
+      ? dateResults[0].message
+      : `Conflict in date range: ${blockedDatesStr}`;
+  } else {
+    if (specialExceptionCount > 0) {
+      overallMessage = 'Permission exists, but no attendance was recorded for the full day. You can apply Leave for this date.';
+    } else {
+      overallMessage = 'Date selection is valid and available.';
+    }
+  }
+
+  const overallCode = dateList.length === 1
+    ? dateResults[0].code
+    : (overallAllowed ? (specialExceptionCount > 0 ? 'ALLOWED_WITH_SPECIAL_EXCEPTION' : 'ALLOWED') : 'BLOCKED');
+
+  return {
+    allowed: overallAllowed,
+    message: overallMessage,
+    code: overallCode,
+    dateResults,
+    specialExceptionCount,
+    blockedCount
+  };
+}
+
+// 1f-2. Leave & Permission Validation Endpoint
+app.post("/api/leaves/validate", async (req, res) => {
+  const {
+    tenantId,
+    employeeId,
+    requestType,
+    leaveCategory,
+    leaveDurationType,
+    halfDaySession,
+    startDate,
+    endDate,
+  } = req.body;
+
+  if (!tenantId || !employeeId) {
+    return res.status(400).json({ error: "Missing required fields: tenantId, employeeId" });
+  }
+
+  try {
+    const [allLeaves, allAttendance] = await Promise.all([
+      getTenantItems(COMPANY_TABLES.leaves, tenantId),
+      getTenantItems(COMPANY_TABLES.attendance, tenantId),
+    ]);
+
+    const targetEmpId = String(employeeId || '').trim();
+    const matchEmp = (rec) => {
+      if (!rec) return false;
+      if (targetEmpId) {
+        if (rec.employeeId === targetEmpId || rec.empCode === targetEmpId) return true;
+        if (rec.employeeName && rec.employeeName.trim().toLowerCase() === targetEmpId.toLowerCase()) return true;
+      }
+      return false;
+    };
+
+    const userLeaves = allLeaves.filter(matchEmp);
+    const userAttendance = allAttendance.filter(matchEmp);
+
+    const isRange = leaveDurationType === 'range' || String(startDate || '').includes(' - ') || (endDate && startDate !== endDate && requestType !== 'permission');
+
+    const validation = validateLeavePermissionConflict({
+      tenantId,
+      employeeId: targetEmpId,
+      requestType: requestType || 'leave',
+      leaveCategory: leaveCategory || 'Casual',
+      leaveDurationType: isRange ? 'range' : (leaveDurationType || 'single'),
+      halfDaySession: halfDaySession || 'Morning (1st Half)',
+      startDate: startDate || new Date().toISOString(),
+      endDate: endDate || startDate || new Date().toISOString(),
+      existingLeaves: userLeaves,
+      existingAttendance: userAttendance,
+    });
+
+    res.json({ success: true, ...validation });
+  } catch (error) {
+    console.error(`[LeavesValidate] Error:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 1g. Approve / Reject / Forward / Close Attendance Requests
 app.post("/api/attendance-requests/act", async (req, res) => {
   const { tenantId, requestId, action, comment, actorId, actorName, actorRole } = req.body;
@@ -2404,6 +2769,89 @@ app.post("/api/companies/mutate", async (req, res) => {
   // Debug log for attendance mutations
   if (table === 'attendance') {
     console.log(`[Mutate] attendance => id=${item.id}, empId=${item.employeeId}, date=${item.date}, clockIn=${item.clockIn || item.checkIn}, clockOut=${item.clockOut || item.checkOut}`);
+  }
+
+  // Pre-mutation validation for leaves & permissions table
+  if (table === 'leaves' && item.employeeId && (String(item.status || '').trim().toLowerCase() === 'pending' || String(item.status || '').trim().toLowerCase() === 'approved')) {
+    try {
+      const [allLeaves, allAttendance] = await Promise.all([
+        getTenantItems(COMPANY_TABLES.leaves, item.tenantId),
+        getTenantItems(COMPANY_TABLES.attendance, item.tenantId),
+      ]);
+
+      const matchEmp = (rec) => {
+        if (!rec) return false;
+        if (item.employeeId && (rec.employeeId === item.employeeId || rec.empCode === item.employeeId)) return true;
+        if (item.empCode && (rec.employeeId === item.empCode || rec.empCode === item.empCode)) return true;
+        if (item.employeeName && rec.employeeName && rec.employeeName.trim().toLowerCase() === item.employeeName.trim().toLowerCase()) return true;
+        return false;
+      };
+
+      const userLeaves = allLeaves.filter((l) => l.id !== item.id && matchEmp(l));
+      const userAttendance = allAttendance.filter(matchEmp);
+
+      const reqType = isPermissionRecord(item) ? 'permission' : 'leave';
+      const isHalf = isHalfDayRecord(item);
+      const isRange = !isHalf && (
+        String(item.leaveDurationType || '').toLowerCase() === 'range' ||
+        String(item.startDate || '').includes(' - ') ||
+        (item.startDate !== item.endDate && item.endDate && !isPermissionRecord(item))
+      );
+
+      const val = validateLeavePermissionConflict({
+        tenantId: item.tenantId,
+        employeeId: item.employeeId,
+        requestType: reqType,
+        leaveCategory: item.leaveCategory || (item.type?.includes('Sick') ? 'Sick' : item.type?.includes('Earned') ? 'Earned' : item.type?.includes('LOP') ? 'LOP' : 'Casual'),
+        leaveDurationType: isHalf ? 'half' : (isRange ? 'range' : 'single'),
+        halfDaySession: item.startDate?.includes('Afternoon') ? 'Afternoon (2nd Half)' : 'Morning (1st Half)',
+        startDate: item.startDate || item.date,
+        endDate: item.endDate || item.startDate || item.date,
+        existingLeaves: userLeaves,
+        existingAttendance: userAttendance,
+      });
+
+      if (!val.allowed) {
+        console.warn(`[Mutate] Leave mutation REJECTED for ${item.employeeId}: ${val.message}`);
+        return res.status(400).json({
+          error: val.message,
+          code: val.code,
+          validation: val,
+        });
+      }
+
+      // Handle Special Exception permission superseding on submission/approval
+      if (val.specialExceptionCount > 0) {
+        for (const dRes of val.dateResults) {
+          if (dRes.isSpecialException) {
+            const permToSupersede = userLeaves.find((l) => {
+              if (!isPermissionRecord(l)) return false;
+              const st = String(l.status || '').toLowerCase();
+              if (st !== 'approved') return false;
+              return getDatesForLeaveRecord(l).includes(dRes.date);
+            });
+            if (permToSupersede) {
+              console.log(`[Mutate] Superseding permission ${permToSupersede.id} on date ${dRes.date} due to Full-Day Leave special exception.`);
+              await ddb.send(new PutCommand({
+                TableName: COMPANY_TABLES.leaves,
+                Item: {
+                  ...permToSupersede,
+                  status: 'Superseded',
+                  supersededByLeaveId: item.id,
+                  supersededAt: new Date().toISOString(),
+                  note: `Superseded by full-day leave (${item.id}) as employee was absent all day.`,
+                }
+              }));
+            }
+          }
+        }
+      }
+    } catch (valErr) {
+      console.error(`[Mutate] Pre-validation error:`, valErr.message);
+      return res.status(400).json({
+        error: `Leave validation error: ${valErr.message}`,
+      });
+    }
   }
 
   try {
