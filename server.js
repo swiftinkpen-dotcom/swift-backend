@@ -5079,6 +5079,161 @@ app.post("/api/employees/bulk-welcome-emails", async (req, res) => {
   res.json({ success: true, count: results.length, results });
 });
 
+// Helper for checking employee duplicates
+function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId = null) {
+  const conflicts = [];
+  const normEmpCode = (code) => String(code || "").trim().toLowerCase();
+  const normEmail = (email) => String(email || "").trim().toLowerCase();
+  const normPhone = (phone) => {
+    const digits = String(phone || "").replace(/\D/g, "");
+    if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+    if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+    return digits;
+  };
+  const normPan = (pan) => String(pan || "").replace(/[\s-]/g, "").trim().toUpperCase();
+  const normAadhaar = (aadhaar) => String(aadhaar || "").replace(/\D/g, "");
+  const normUan = (uan) => String(uan || "").replace(/\D/g, "");
+
+  const cCode = normEmpCode(candidate.empCode);
+  const cEmail = normEmail(candidate.email);
+  const cPhone = normPhone(candidate.phone);
+  const cPan = normPan(candidate.pan);
+  const cAadhaar = normAadhaar(candidate.aadhaar);
+  const cUan = normUan(candidate.uan);
+
+  for (const emp of existingEmployees) {
+    if (!emp) continue;
+    if (excludeId && (emp.id === excludeId || String(emp.id).toLowerCase() === String(excludeId).toLowerCase())) {
+      continue;
+    }
+
+    const empName = emp.name || "Existing Employee";
+    const empCode = emp.empCode || "—";
+
+    // 1. Employee Code
+    if (cCode && normEmpCode(emp.empCode) === cCode) {
+      if (!conflicts.some((c) => c.field === "empCode")) {
+        conflicts.push({
+          field: "empCode",
+          label: "Employee Code",
+          value: candidate.empCode,
+          message: `Employee Code "${candidate.empCode}" already exists in database (assigned to ${empName})`,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+        });
+      }
+    }
+
+    // 2. Email
+    if (cEmail && (normEmail(emp.email) === cEmail || normEmail(emp.workEmail) === cEmail)) {
+      if (!conflicts.some((c) => c.field === "email")) {
+        conflicts.push({
+          field: "email",
+          label: "Email Address",
+          value: candidate.email,
+          message: `Email "${candidate.email}" already exists in database (assigned to ${empName} - ${empCode})`,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+        });
+      }
+    }
+
+    // 3. Phone Number
+    if (cPhone && cPhone.length >= 7) {
+      const ePhone = normPhone(emp.phone);
+      if (ePhone && ePhone.length >= 7) {
+        const isMatch = ePhone === cPhone || (ePhone.length >= 10 && cPhone.length >= 10 && ePhone.slice(-10) === cPhone.slice(-10));
+        if (isMatch && !conflicts.some((c) => c.field === "phone")) {
+          conflicts.push({
+            field: "phone",
+            label: "Phone Number",
+            value: candidate.phone,
+            message: `Phone number "${candidate.phone}" already exists in database (assigned to ${empName} - ${empCode})`,
+            existingEmployeeName: empName,
+            existingEmpCode: empCode,
+            existingEmployeeId: emp.id,
+          });
+        }
+      }
+    }
+
+    // 4. PAN Card
+    if (cPan && cPan.length >= 8 && normPan(emp.pan) === cPan) {
+      if (!conflicts.some((c) => c.field === "pan")) {
+        conflicts.push({
+          field: "pan",
+          label: "PAN Card",
+          value: candidate.pan,
+          message: `PAN Card "${candidate.pan}" already exists in database (assigned to ${empName} - ${empCode})`,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+        });
+      }
+    }
+
+    // 5. Aadhaar Number
+    if (cAadhaar && cAadhaar.length >= 10 && normAadhaar(emp.aadhaar) === cAadhaar) {
+      if (!conflicts.some((c) => c.field === "aadhaar")) {
+        conflicts.push({
+          field: "aadhaar",
+          label: "Aadhaar Card",
+          value: candidate.aadhaar,
+          message: `Aadhaar "${candidate.aadhaar}" already exists in database (assigned to ${empName} - ${empCode})`,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+        });
+      }
+    }
+
+    // 6. PF UAN Number
+    if (cUan && cUan.length >= 8 && normUan(emp.uan) === cUan) {
+      if (!conflicts.some((c) => c.field === "uan")) {
+        conflicts.push({
+          field: "uan",
+          label: "PF UAN Number",
+          value: candidate.uan,
+          message: `PF UAN "${candidate.uan}" already exists in database (assigned to ${empName} - ${empCode})`,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+        });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+// Endpoint to check employee unique field duplicates in database
+app.post("/api/employees/check-duplicate", async (req, res) => {
+  const { tenantId, empCode, email, phone, pan, aadhaar, uan, excludeId } = req.body;
+  if (!tenantId) {
+    return res.status(400).json({ error: "Missing required param: tenantId" });
+  }
+
+  try {
+    const existingEmployees = await getTenantItems(COMPANY_TABLES.employees, tenantId);
+    const conflicts = findDuplicateEmployeeConflicts(
+      { empCode, email, phone, pan, aadhaar, uan },
+      existingEmployees,
+      excludeId
+    );
+
+    res.json({
+      exists: conflicts.length > 0,
+      conflicts,
+      message: conflicts.length > 0 ? conflicts[0].message : "No duplicate found",
+    });
+  } catch (err) {
+    console.error("[check-duplicate] Error querying employees:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ==========================================
 // SWIFT / SHIFT AI Chatbot API (Protected with Security Guardrails)
 // ==========================================
