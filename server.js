@@ -1567,8 +1567,8 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
       daysWorked = presentDays + halfDays * 0.5 + leaveDays;
       const prorateFactor = wd > 0 ? daysWorked / wd : 1;
 
-      const fixedGross = employee?.basic || employee?.fixedSalary || 45000;
-      const hourly = fixedGross / (wd * 8);
+      const fixedGross = employee?.fixedSalary ?? employee?.basic ?? employee?.salary ?? 0;
+      const hourly = wd > 0 && fixedGross > 0 ? fixedGross / (wd * 8) : 0;
       const otHours = userLogs.reduce((s, a) => s + (Number(a.otHours) || 0), 0);
       const otPay = Math.round(hourly * otHours * 1.5);
 
@@ -5999,8 +5999,8 @@ function renderDocumentTemplateText(templateText, employee, company, overrides =
   const branchName = company?.branches?.find((b) => b.id === employee?.branchId)?.name || company?.branches?.[0]?.name || "Head Office";
   const doj = employee?.doj || employee?.joiningDate || "01-Jul-2024";
   const managerName = employee?.reportingManager || "Reporting Manager";
-  const annualCtcNum = (employee?.basic || employee?.fixedSalary || 45000) * 12;
-  const monthlyCtcNum = employee?.basic || employee?.fixedSalary || 45000;
+  const annualCtcNum = (employee?.fixedSalary ?? employee?.basic ?? employee?.salary ?? 0) * 12;
+  const monthlyCtcNum = employee?.fixedSalary ?? employee?.basic ?? employee?.salary ?? 0;
   const annualCtcStr = "₹" + annualCtcNum.toLocaleString("en-IN");
   const monthlyCtcStr = "₹" + monthlyCtcNum.toLocaleString("en-IN");
   const compName = company?.legalName || company?.name || "SWIFT Technologies Pvt Ltd";
