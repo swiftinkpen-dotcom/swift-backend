@@ -261,4 +261,153 @@ router.delete("/api/devices/:id", async (req, res) => {
   }
 });
 
+/**
+ * ============================================================================
+ * 4. Universal Cloud-Native Biometric USB Ingestion & Matrix Engine
+ * ============================================================================
+ */
+const BiometricUsbModel = require("../models/biometricUsbModel");
+const {
+  parseUniversalFile,
+  applyDebounceFilter,
+  createPunchHash,
+} = require("../utils/universalBiometricParser");
+
+// POST /api/attendance/usb/parse-preview
+router.post("/api/attendance/usb/parse-preview", async (req, res) => {
+  try {
+    const { fileContent, fileName, targetMonth } = req.body;
+    const tenantId = req.body.tenantId || req.headers["x-tenant-id"] || req.headers["x-company-id"] || "default";
+
+    if (!fileContent) {
+      return res.status(400).json({ success: false, error: "fileContent is required" });
+    }
+
+    // Decode base64 if sent as data URI or base64 string
+    let rawText = fileContent;
+    if (fileContent.startsWith("data:") || fileContent.includes(";base64,")) {
+      const base64Data = fileContent.split(";base64,").pop();
+      rawText = Buffer.from(base64Data, "base64").toString("utf-8");
+    }
+
+    // 1. Universal Multi-Format Parsing & Sanitation
+    const parseResult = parseUniversalFile(rawText);
+    if (!parseResult.success || parseResult.punches.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: parseResult.error || "No valid biometric punch records detected in file",
+        meta: parseResult,
+      });
+    }
+
+    // 2. Multi-layer Deduplication: Layer 1 - 60s Sliding Debounce
+    const debounced = applyDebounceFilter(parseResult.punches, 60);
+
+    // 3. Multi-layer Deduplication: Layer 2 - Exact Cryptographic Punch Signatures
+    const punchesWithHash = debounced.debouncedPunches.map((p) => {
+      const hash = createPunchHash(tenantId, p.biometricCode, p.timestamp);
+      return { ...p, hash };
+    });
+
+    const allHashes = punchesWithHash.map((p) => p.hash);
+    const existingHashes = await BiometricUsbModel.checkExistingSignatures(tenantId, allHashes);
+
+    // 4. Smart Employee Code Mapping & Matrix Aggregation
+    // Calculate monthly attendance using all valid debounced punches from the file
+    const matrixResult = await BiometricUsbModel.computeMonthlyAttendanceMatrix(
+      tenantId,
+      punchesWithHash,
+      targetMonth
+    );
+
+    // Only new hashes that are not yet stored in DynamoDB dedup ledger need to be queued
+    const newSignatures = punchesWithHash
+      .filter((p) => !existingHashes.has(p.hash))
+      .map((p) => p.hash);
+
+    return res.status(200).json({
+      success: true,
+      ...matrixResult,
+      metrics: {
+        fileName: fileName || "biometric_upload.txt",
+        delimiterDetected: parseResult.delimiterDetected,
+        dateFormatDetected: parseResult.dateFormatDetected,
+        totalLinesParsed: parseResult.totalLines,
+        rawPunchesCount: parseResult.validPunchesCount,
+        debouncedPunchesCount: debounced.retainedCount,
+        debouncedDroppedCount: debounced.droppedDuplicatesCount,
+        existingDuplicateHashesCount: existingHashes.size,
+        cleanPunchesProcessed: punchesWithHash.length,
+        newHashesCount: newSignatures.length,
+      },
+      newPunchSignatures: newSignatures,
+    });
+  } catch (error) {
+    console.error("[POST /api/attendance/usb/parse-preview Error]", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/attendance/usb/mappings
+router.get("/api/attendance/usb/mappings", async (req, res) => {
+  try {
+    const tenantId = req.query.tenantId || req.headers["x-tenant-id"] || req.headers["x-company-id"] || "default";
+    const { mappingList } = await BiometricUsbModel.getMappings(tenantId);
+    return res.status(200).json({ success: true, mappings: mappingList });
+  } catch (error) {
+    console.error("[GET /api/attendance/usb/mappings Error]", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/attendance/usb/save-mappings
+router.post("/api/attendance/usb/save-mappings", async (req, res) => {
+  try {
+    const { mappings, adminId } = req.body;
+    const tenantId = req.body.tenantId || req.headers["x-tenant-id"] || req.headers["x-company-id"] || "default";
+
+    if (!Array.isArray(mappings) || mappings.length === 0) {
+      return res.status(400).json({ success: false, error: "mappings array is required" });
+    }
+
+    const result = await BiometricUsbModel.saveMappings(tenantId, mappings, adminId || "HR_ADMIN");
+    return res.status(200).json({
+      success: true,
+      savedCount: result.savedCount,
+      message: `Successfully registered ${result.savedCount} employee biometric code mappings.`,
+    });
+  } catch (error) {
+    console.error("[POST /api/attendance/usb/save-mappings Error]", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/attendance/usb/confirm-save
+router.post("/api/attendance/usb/confirm-save", async (req, res) => {
+  try {
+    const { matrixRows, punchSignatures, adminId } = req.body;
+    const tenantId = req.body.tenantId || req.headers["x-tenant-id"] || req.headers["x-company-id"] || "default";
+
+    if (!Array.isArray(matrixRows) || matrixRows.length === 0) {
+      return res.status(400).json({ success: false, error: "matrixRows array is required" });
+    }
+
+    const result = await BiometricUsbModel.commitAttendanceBatch(
+      tenantId,
+      matrixRows,
+      punchSignatures || [],
+      adminId || "HR_ADMIN"
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully saved ${result.writtenAttendanceCount} attendance records and registered ${result.writtenDedupHashesCount} cryptographic deduplication signatures to AWS.`,
+      result,
+    });
+  } catch (error) {
+    console.error("[POST /api/attendance/usb/confirm-save Error]", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
