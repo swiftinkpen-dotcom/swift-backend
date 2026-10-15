@@ -5529,6 +5529,97 @@ app.post("/api/employees/bulk-welcome-emails", async (req, res) => {
   res.json({ success: true, count: results.length, results });
 });
 
+// Employee Duplicate Check Route (Real-Time Backend & DynamoDB Verification)
+app.post("/api/employees/check-duplicate", async (req, res) => {
+  try {
+    const { tenantId, empCode, email, phone, pan, aadhaar, uan, excludeId } = req.body;
+    if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+
+    const employees = await getTenantItems(COMPANY_TABLES.employees, tenantId);
+    const conflicts = [];
+
+    const norm = (val) => (val ? String(val).trim().toLowerCase() : "");
+    const normDigits = (val) => (val ? String(val).replace(/\D/g, "") : "");
+
+    const normEmpCode = norm(empCode);
+    const normEmail = norm(email);
+    const normPhone = normDigits(phone);
+    const normPan = norm(pan);
+    const normAadhaar = normDigits(aadhaar);
+    const normUan = normDigits(uan);
+
+    for (const emp of employees) {
+      if (excludeId && (emp.id === excludeId || emp.empCode === excludeId)) continue;
+
+      if (normEmpCode && norm(emp.empCode) === normEmpCode) {
+        conflicts.push({
+          field: "empCode",
+          label: "Employee Code",
+          value: empCode,
+          conflictingEmployeeName: emp.name || emp.empCode,
+          conflictingEmployeeCode: emp.empCode,
+          message: `Employee Code "${empCode}" is already assigned to ${emp.name || emp.empCode}.`
+        });
+      }
+      if (normEmail && norm(emp.email) === normEmail) {
+        conflicts.push({
+          field: "email",
+          label: "Email Address",
+          value: email,
+          conflictingEmployeeName: emp.name || emp.empCode,
+          conflictingEmployeeCode: emp.empCode,
+          message: `Email "${email}" is already registered to ${emp.name || emp.empCode}.`
+        });
+      }
+      if (normPhone && normDigits(emp.phone) === normPhone) {
+        conflicts.push({
+          field: "phone",
+          label: "Phone Number",
+          value: phone,
+          conflictingEmployeeName: emp.name || emp.empCode,
+          conflictingEmployeeCode: emp.empCode,
+          message: `Phone "${phone}" is already registered to ${emp.name || emp.empCode}.`
+        });
+      }
+      if (normPan && norm(emp.pan) === normPan) {
+        conflicts.push({
+          field: "pan",
+          label: "PAN",
+          value: pan,
+          conflictingEmployeeName: emp.name || emp.empCode,
+          conflictingEmployeeCode: emp.empCode,
+          message: `PAN "${pan}" already belongs to ${emp.name || emp.empCode}.`
+        });
+      }
+      if (normAadhaar && normDigits(emp.aadhaar) === normAadhaar) {
+        conflicts.push({
+          field: "aadhaar",
+          label: "Aadhaar",
+          value: aadhaar,
+          conflictingEmployeeName: emp.name || emp.empCode,
+          conflictingEmployeeCode: emp.empCode,
+          message: `Aadhaar "${aadhaar}" already belongs to ${emp.name || emp.empCode}.`
+        });
+      }
+      if (normUan && normDigits(emp.uan) === normUan) {
+        conflicts.push({
+          field: "uan",
+          label: "UAN",
+          value: uan,
+          conflictingEmployeeName: emp.name || emp.empCode,
+          conflictingEmployeeCode: emp.empCode,
+          message: `UAN "${uan}" already belongs to ${emp.name || emp.empCode}.`
+        });
+      }
+    }
+
+    res.json({ success: true, hasDuplicate: conflicts.length > 0, conflicts });
+  } catch (err) {
+    console.error("[check-duplicate] Error:", err.message);
+    res.status(500).json({ error: err.message, hasDuplicate: false, conflicts: [] });
+  }
+});
+
 // ==========================================
 // SWIFT / SHIFT AI Chatbot API (Protected with Security Guardrails)
 // ==========================================
