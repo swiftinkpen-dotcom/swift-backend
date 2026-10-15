@@ -722,7 +722,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
         if (tenantRes.Item && tenantRes.Item.payrollLockPassword) {
           companyConfig.payrollLockPassword = tenantRes.Item.payrollLockPassword;
         }
-      } catch (tErr) {}
+      } catch (tErr) { }
     }
 
     if (companyConfig && !companyConfig.approvalWorkflows) {
@@ -1820,13 +1820,13 @@ app.get("/api/companies/payroll-lock-config", async (req, res) => {
     try {
       const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
       matchedTenant = tenantRes.Item;
-    } catch (err) {}
+    } catch (err) { }
 
     if (!matchedTenant) {
       try {
         const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
         matchedTenant = (scanRes.Items || []).find(t => t.id === tenantId || t.slug === tenantId);
-      } catch (err) {}
+      } catch (err) { }
     }
 
     let companyConfig = null;
@@ -1836,7 +1836,7 @@ app.get("/api/companies/payroll-lock-config", async (req, res) => {
         Key: { tenantId, id: "config" }
       }));
       companyConfig = cfgRes.Item;
-    } catch (err) {}
+    } catch (err) { }
 
     const rawPassword = (matchedTenant && matchedTenant.payrollLockPassword) || (companyConfig && companyConfig.payrollLockPassword) || "";
     const payrollLockPassword = String(rawPassword || "").trim();
@@ -5529,93 +5529,171 @@ app.post("/api/employees/bulk-welcome-emails", async (req, res) => {
   res.json({ success: true, count: results.length, results });
 });
 
-// Employee Duplicate Check Route (Real-Time Backend & DynamoDB Verification)
-app.post("/api/employees/check-duplicate", async (req, res) => {
-  try {
-    const { tenantId, empCode, email, phone, pan, aadhaar, uan, excludeId } = req.body;
-    if (!tenantId) return res.status(400).json({ error: "tenantId required" });
+// Helper for checking employee duplicates
+function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId = null) {
+  const conflicts = [];
+  const normEmpCode = (code) => String(code || "").trim().toLowerCase();
+  const normEmail = (email) => String(email || "").trim().toLowerCase();
+  const normPhone = (phone) => {
+    const digits = String(phone || "").replace(/\D/g, "");
+    if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+    if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+    return digits;
+  };
+  const normPan = (pan) => String(pan || "").replace(/[\s-]/g, "").trim().toUpperCase();
+  const normAadhaar = (aadhaar) => String(aadhaar || "").replace(/\D/g, "");
+  const normUan = (uan) => String(uan || "").replace(/\D/g, "");
 
-    const employees = await getTenantItems(COMPANY_TABLES.employees, tenantId);
-    const conflicts = [];
+  const cCode = normEmpCode(candidate.empCode);
+  const cEmail = normEmail(candidate.email);
+  const cPhone = normPhone(candidate.phone);
+  const cPan = normPan(candidate.pan);
+  const cAadhaar = normAadhaar(candidate.aadhaar);
+  const cUan = normUan(candidate.uan);
 
-    const norm = (val) => (val ? String(val).trim().toLowerCase() : "");
-    const normDigits = (val) => (val ? String(val).replace(/\D/g, "") : "");
+  for (const emp of existingEmployees) {
+    if (!emp) continue;
+    if (excludeId && (emp.id === excludeId || String(emp.id).toLowerCase() === String(excludeId).toLowerCase())) {
+      continue;
+    }
 
-    const normEmpCode = norm(empCode);
-    const normEmail = norm(email);
-    const normPhone = normDigits(phone);
-    const normPan = norm(pan);
-    const normAadhaar = normDigits(aadhaar);
-    const normUan = normDigits(uan);
+    const empName = emp.name || emp.empCode || "Existing Employee";
+    const empCode = emp.empCode || "—";
 
-    for (const emp of employees) {
-      if (excludeId && (emp.id === excludeId || emp.empCode === excludeId)) continue;
-
-      if (normEmpCode && norm(emp.empCode) === normEmpCode) {
+    // 1. Employee Code
+    if (cCode && normEmpCode(emp.empCode) === cCode) {
+      if (!conflicts.some((c) => c.field === "empCode")) {
         conflicts.push({
           field: "empCode",
           label: "Employee Code",
-          value: empCode,
-          conflictingEmployeeName: emp.name || emp.empCode,
-          conflictingEmployeeCode: emp.empCode,
-          message: `Employee Code "${empCode}" is already assigned to ${emp.name || emp.empCode}.`
-        });
-      }
-      if (normEmail && norm(emp.email) === normEmail) {
-        conflicts.push({
-          field: "email",
-          label: "Email Address",
-          value: email,
-          conflictingEmployeeName: emp.name || emp.empCode,
-          conflictingEmployeeCode: emp.empCode,
-          message: `Email "${email}" is already registered to ${emp.name || emp.empCode}.`
-        });
-      }
-      if (normPhone && normDigits(emp.phone) === normPhone) {
-        conflicts.push({
-          field: "phone",
-          label: "Phone Number",
-          value: phone,
-          conflictingEmployeeName: emp.name || emp.empCode,
-          conflictingEmployeeCode: emp.empCode,
-          message: `Phone "${phone}" is already registered to ${emp.name || emp.empCode}.`
-        });
-      }
-      if (normPan && norm(emp.pan) === normPan) {
-        conflicts.push({
-          field: "pan",
-          label: "PAN",
-          value: pan,
-          conflictingEmployeeName: emp.name || emp.empCode,
-          conflictingEmployeeCode: emp.empCode,
-          message: `PAN "${pan}" already belongs to ${emp.name || emp.empCode}.`
-        });
-      }
-      if (normAadhaar && normDigits(emp.aadhaar) === normAadhaar) {
-        conflicts.push({
-          field: "aadhaar",
-          label: "Aadhaar",
-          value: aadhaar,
-          conflictingEmployeeName: emp.name || emp.empCode,
-          conflictingEmployeeCode: emp.empCode,
-          message: `Aadhaar "${aadhaar}" already belongs to ${emp.name || emp.empCode}.`
-        });
-      }
-      if (normUan && normDigits(emp.uan) === normUan) {
-        conflicts.push({
-          field: "uan",
-          label: "UAN",
-          value: uan,
-          conflictingEmployeeName: emp.name || emp.empCode,
-          conflictingEmployeeCode: emp.empCode,
-          message: `UAN "${uan}" already belongs to ${emp.name || emp.empCode}.`
+          value: candidate.empCode,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+          message: `Employee Code "${candidate.empCode}" already exists in database (assigned to ${empName})`,
         });
       }
     }
 
-    res.json({ success: true, hasDuplicate: conflicts.length > 0, conflicts });
+    // 2. Email
+    if (cEmail && (normEmail(emp.email) === cEmail || normEmail(emp.workEmail) === cEmail)) {
+      if (!conflicts.some((c) => c.field === "email")) {
+        conflicts.push({
+          field: "email",
+          label: "Email Address",
+          value: candidate.email,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+          message: `Email "${candidate.email}" already exists in database (assigned to ${empName} - ${empCode})`,
+        });
+      }
+    }
+
+    // 3. Phone Number
+    if (cPhone && cPhone.length >= 7) {
+      const ePhone = normPhone(emp.phone);
+      if (ePhone && ePhone.length >= 7) {
+        const isMatch = ePhone === cPhone || (ePhone.length >= 10 && cPhone.length >= 10 && ePhone.slice(-10) === cPhone.slice(-10));
+        if (isMatch && !conflicts.some((c) => c.field === "phone")) {
+          conflicts.push({
+            field: "phone",
+            label: "Phone Number",
+            value: candidate.phone,
+            conflictingEmployeeName: empName,
+            conflictingEmployeeCode: empCode,
+            existingEmployeeName: empName,
+            existingEmpCode: empCode,
+            existingEmployeeId: emp.id,
+            message: `Phone number "${candidate.phone}" already exists in database (assigned to ${empName} - ${empCode})`,
+          });
+        }
+      }
+    }
+
+    // 4. PAN Card
+    if (cPan && cPan.length >= 8 && normPan(emp.pan) === cPan) {
+      if (!conflicts.some((c) => c.field === "pan")) {
+        conflicts.push({
+          field: "pan",
+          label: "PAN Card",
+          value: candidate.pan,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+          message: `PAN Card "${candidate.pan}" already exists in database (assigned to ${empName} - ${empCode})`,
+        });
+      }
+    }
+
+    // 5. Aadhaar Number
+    if (cAadhaar && cAadhaar.length >= 10 && normAadhaar(emp.aadhaar) === cAadhaar) {
+      if (!conflicts.some((c) => c.field === "aadhaar")) {
+        conflicts.push({
+          field: "aadhaar",
+          label: "Aadhaar Card",
+          value: candidate.aadhaar,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+          message: `Aadhaar "${candidate.aadhaar}" already exists in database (assigned to ${empName} - ${empCode})`,
+        });
+      }
+    }
+
+    // 6. PF UAN Number
+    if (cUan && cUan.length >= 8 && normUan(emp.uan) === cUan) {
+      if (!conflicts.some((c) => c.field === "uan")) {
+        conflicts.push({
+          field: "uan",
+          label: "PF UAN Number",
+          value: candidate.uan,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
+          existingEmployeeName: empName,
+          existingEmpCode: empCode,
+          existingEmployeeId: emp.id,
+          message: `PF UAN "${candidate.uan}" already exists in database (assigned to ${empName} - ${empCode})`,
+        });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+// Endpoint to check employee unique field duplicates in database
+app.post("/api/employees/check-duplicate", async (req, res) => {
+  const { tenantId, empCode, email, phone, pan, aadhaar, uan, excludeId } = req.body;
+  if (!tenantId) {
+    return res.status(400).json({ error: "Missing required param: tenantId" });
+  }
+
+  try {
+    const existingEmployees = await getTenantItems(COMPANY_TABLES.employees, tenantId);
+    const conflicts = findDuplicateEmployeeConflicts(
+      { empCode, email, phone, pan, aadhaar, uan },
+      existingEmployees,
+      excludeId
+    );
+
+    res.json({
+      success: true,
+      exists: conflicts.length > 0,
+      hasDuplicate: conflicts.length > 0,
+      conflicts,
+      message: conflicts.length > 0 ? conflicts[0].message : "No duplicate found",
+    });
   } catch (err) {
-    console.error("[check-duplicate] Error:", err.message);
+    console.error("[check-duplicate] Error querying employees:", err.message);
     res.status(500).json({ error: err.message, hasDuplicate: false, conflicts: [] });
   }
 });
@@ -6759,10 +6837,10 @@ app.post("/api/team-chat/send", async (req, res) => {
 
     const resolvedMediaType = mediaType || (
       typeof effectiveText === "string" && (effectiveText.startsWith("🎤 Voice") || effectiveText.startsWith("🎤 ")) ? "audio" :
-      typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
-      typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
-      typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
-      undefined
+        typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
+          typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
+            typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
+              undefined
     );
 
     let resolvedFileSize = fileSize;
@@ -7407,10 +7485,10 @@ async function startServer() {
 
             const resolvedMediaType = mediaType || (
               typeof effectiveText === "string" && (effectiveText.startsWith("🎤 Voice") || effectiveText.startsWith("🎤 ")) ? "audio" :
-              typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
-              typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
-              typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
-              undefined
+                typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
+                  typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
+                    typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
+                      undefined
             );
 
             let resolvedFileSize = fileSize;
