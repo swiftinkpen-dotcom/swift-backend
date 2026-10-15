@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const PDFDocument = require("pdfkit");
 const { DynamoDBClient, CreateTableCommand, DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand, QueryCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { S3Client, PutObjectCommand, HeadBucketCommand, CreateBucketCommand } = require("@aws-sdk/client-s3");
 const { RekognitionClient, IndexFacesCommand, SearchFacesByImageCommand, CreateCollectionCommand, DescribeCollectionCommand } = require("@aws-sdk/client-rekognition");
 const OpenAI = require("openai");
@@ -5120,7 +5120,34 @@ app.post("/api/employee/login", async (req, res) => {
     }
 
     const empStatus = String(matched.status || "active").toLowerCase().trim();
-    if (empStatus !== "active") {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const isNoticeExpired = (empStatus === "notice_period" || empStatus === "notice") && matched.lastWorkingDate && todayStr > matched.lastWorkingDate;
+
+    if (isNoticeExpired) {
+      console.warn(`[Login Blocked] Employee ${matched.empCode} (${matched.name}) notice period expired on ${matched.lastWorkingDate}`);
+      try {
+        await ddb.send(new UpdateCommand({
+          TableName: COMPANY_TABLES.employees,
+          Key: { id: matched.id },
+          UpdateExpression: "SET #st = :relieved, statusDate = :lwd, statusNote = :note",
+          ExpressionAttributeNames: { "#st": "status" },
+          ExpressionAttributeValues: {
+            ":relieved": "relieved",
+            ":lwd": matched.lastWorkingDate,
+            ":note": (matched.statusNote ? matched.statusNote + " " : "") + `[Auto-relieved after LWD ${matched.lastWorkingDate}]`
+          }
+        }));
+      } catch (dbErr) {
+        console.warn("[Notice Auto-Relieve] Error auto-updating employee to relieved:", dbErr.message);
+      }
+      return res.status(403).json({
+        error: `Your notice period ended on ${matched.lastWorkingDate}. Your account has been automatically marked as Relieved and access is restricted. Please contact HR.`,
+        accountStatus: "relieved",
+        status: "relieved"
+      });
+    }
+
+    if (empStatus !== "active" && empStatus !== "notice_period" && empStatus !== "notice") {
       const displayStatus = empStatus === "relieved" || empStatus === "releived" ? "Releived" : (matched.status ? (matched.status.charAt(0).toUpperCase() + matched.status.slice(1)) : "Inactive");
       console.warn(`[Login Blocked] Employee ${matched.empCode} (${matched.name}) status is "${displayStatus}"`);
       return res.status(403).json({
@@ -5185,8 +5212,38 @@ app.get("/api/employee/check-status", async (req, res) => {
     }
 
     const rawStatus = String(employee.status || "active").toLowerCase().trim();
-    const isActive = rawStatus === "active";
-    const displayStatus = rawStatus === "relieved" || rawStatus === "releived" ? "Releived" : (rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1));
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const isNoticeExpired = (rawStatus === "notice_period" || rawStatus === "notice") && employee.lastWorkingDate && todayStr > employee.lastWorkingDate;
+
+    if (isNoticeExpired) {
+      try {
+        await ddb.send(new UpdateCommand({
+          TableName: COMPANY_TABLES.employees,
+          Key: { id: employee.id },
+          UpdateExpression: "SET #st = :relieved, statusDate = :lwd, statusNote = :note",
+          ExpressionAttributeNames: { "#st": "status" },
+          ExpressionAttributeValues: {
+            ":relieved": "relieved",
+            ":lwd": employee.lastWorkingDate,
+            ":note": (employee.statusNote ? employee.statusNote + " " : "") + `[Auto-relieved after LWD ${employee.lastWorkingDate}]`
+          }
+        }));
+      } catch (dbErr) {
+        console.warn("[Check-Status Auto-Relieve] DB update error:", dbErr.message);
+      }
+      return res.json({
+        exists: true,
+        active: false,
+        status: "relieved",
+        displayStatus: "Relieved",
+        name: employee.name,
+        empCode: employee.empCode,
+        message: `Your notice period ended on ${employee.lastWorkingDate}. Employment concluded. Access restricted.`
+      });
+    }
+
+    const isActive = rawStatus === "active" || rawStatus === "notice_period" || rawStatus === "notice";
+    const displayStatus = rawStatus === "relieved" || rawStatus === "releived" ? "Releived" : (rawStatus === "notice_period" || rawStatus === "notice") ? "Notice Period" : (rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1));
 
     return res.json({
       exists: true,
