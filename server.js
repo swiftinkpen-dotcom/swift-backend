@@ -3248,21 +3248,42 @@ app.post("/api/companies/face-verify", async (req, res) => {
     if (matches.length > 0 && matches[0].Face && matches[0].Face.ExternalImageId) {
       const matchedEmpId = matches[0].Face.ExternalImageId;
       if (employeeId && matchedEmpId !== employeeId) {
-        return res.json({
-          success: false,
-          reason: `Facial mismatch: Captured face matches employee "${matchedEmpId}", not the logged-in employee`,
-          matchedEmployeeId: matchedEmpId,
-          similarity: matches[0].Similarity,
-        });
+        // Double-check if employeeId and matchedEmpId refer to the same employee (id vs empCode)
+        let isSameEmployee = false;
+        try {
+          const scanRes = await ddb.send(new ScanCommand({
+            TableName: COMPANY_TABLES.employees,
+            FilterExpression: "tenantId = :tid AND (id = :eid OR empCode = :eid OR code = :eid)",
+            ExpressionAttributeValues: { ":tid": tenantId, ":eid": employeeId }
+          }));
+          if (scanRes.Items && scanRes.Items.length > 0) {
+            const empItem = scanRes.Items[0];
+            if (empItem.id === matchedEmpId || empItem.empCode === matchedEmpId || empItem.code === matchedEmpId) {
+              isSameEmployee = true;
+            }
+          }
+        } catch (_dbLookupErr) {}
+
+        if (!isSameEmployee) {
+          return res.json({
+            success: false,
+            reason: `Facial mismatch: Captured face matches employee "${matchedEmpId}", not the selected employee.`,
+            matchedEmployeeId: matchedEmpId,
+            similarity: matches[0].Similarity,
+          });
+        }
       }
-      res.json({
+      return res.json({
         success: true,
         employeeId: matchedEmpId,
         similarity: matches[0].Similarity,
         url: s3Url,
       });
     } else {
-      res.json({ success: false, reason: "No registered matching face found in Rekognition collection" });
+      return res.json({
+        success: false,
+        reason: "No registered matching face found in AWS Rekognition collection. Please ensure your face is registered in your employee profile.",
+      });
     }
   } catch (error) {
     console.warn("[FaceVerify] Error:", error.name, error.message);
@@ -4776,6 +4797,36 @@ app.post("/api/companies/login", async (req, res) => {
       });
     }
 
+    // 1b. Check Common Attendance Kiosk login (Demo or default credentials)
+    if (
+      (searchKey === "kiosk@creatonshr.com" || searchKey === "kiosk@demo" || searchKey === "kiosk" || searchKey === "kiosk01" || searchKey === "common@kiosk") &&
+      (password === "kiosk123" || password === "demo123" || password === "password123")
+    ) {
+      const demoTenant = {
+        id: "demo-tenant-1",
+        name: "CreatonsHR Demo Pvt Ltd",
+        slug: "demo",
+        legal_name: "CreatonsHR Demo Private Limited",
+        address: "123 Business Ave, Suite 100, Bangalore, India",
+        gstin: "29ABCDE1234F1Z5",
+        plan: "growth",
+        status: "active",
+        created_at: new Date().toISOString()
+      };
+      return res.json({
+        user: {
+          id: "kiosk-demo-tenant-1",
+          email: identifier,
+          name: "Common Attendance Kiosk",
+          roleId: "role-kiosk",
+          roleName: "Common Attendance Kiosk",
+          isKiosk: true,
+          isEmployeeLogin: true
+        },
+        memberships: [{ tenant_id: "demo-tenant-1", role: "employee", tenant: demoTenant }]
+      });
+    }
+
     // 2. Check demo employees login
     if ((searchKey === "hr001" || searchKey === "hr@demo.swift" || searchKey === "priya@demo.swift" || searchKey === "hr@demo") && (password === "demo123" || password === "password123")) {
       const hrEmp = {
@@ -4919,6 +4970,56 @@ app.post("/api/companies/login", async (req, res) => {
         user: { id: `user-${matchedTenant.id}`, email: identifier, name: matchedTenant.name },
         memberships: [{ tenant_id: matchedTenant.id, role: "owner", tenant: tenantInfo }]
       });
+    }
+
+    // 3b. Check DynamoDB company config for custom Common Attendance Portal logins
+    try {
+      const cfgScanRes = await ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.config }));
+      const allConfigs = cfgScanRes.Items || [];
+      const matchedCfg = allConfigs.find(c => {
+        const portalEnabled = c.commonPortalEnabled || c.commonPortal?.enabled;
+        const portalUser = String(c.commonPortalUsername || c.commonPortal?.username || "").toLowerCase().trim();
+        const portalPass = String(c.commonPortalPassword || c.commonPortal?.password || "").trim();
+        return portalEnabled && portalUser && portalUser === searchKey && portalPass === password;
+      });
+
+      if (matchedCfg) {
+        const tenantId = matchedCfg.tenantId || "demo-tenant-1";
+        const empTenant = tenants.find(t => t.id === tenantId);
+        const tenantInfo = empTenant ? {
+          id: empTenant.id,
+          name: empTenant.name,
+          slug: empTenant.slug,
+          legal_name: empTenant.legalName || empTenant.name,
+          address: empTenant.address || null,
+          gstin: empTenant.gstin || null,
+          plan: empTenant.plan,
+          status: empTenant.status,
+          created_at: empTenant.createdAt
+        } : {
+          id: tenantId,
+          name: matchedCfg.name || "CreatonsHR",
+          slug: "company",
+          plan: "growth",
+          status: "active",
+          created_at: new Date().toISOString()
+        };
+
+        return res.json({
+          user: {
+            id: `kiosk-${tenantId}`,
+            email: identifier,
+            name: matchedCfg.commonPortal?.portalTitle || `${tenantInfo.name} Kiosk`,
+            roleId: "role-kiosk",
+            roleName: "Common Attendance Kiosk",
+            isKiosk: true,
+            isEmployeeLogin: true
+          },
+          memberships: [{ tenant_id: tenantId, role: "employee", tenant: tenantInfo }]
+        });
+      }
+    } catch (cfgErr) {
+      console.warn("[Login] Config scan warning:", cfgErr.message);
     }
 
     // 4. Check DynamoDB employees table (employee code / work email login)
