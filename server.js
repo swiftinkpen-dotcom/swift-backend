@@ -4701,6 +4701,23 @@ app.get("/api/tenants", async (req, res) => {
   }
 });
 
+app.get("/api/tenants/:id", async (req, res) => {
+  try {
+    const getRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: req.params.id } }));
+    if (getRes.Item) {
+      return res.json(getRes.Item);
+    }
+    const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+    const found = (scanRes.Items || []).find((t) => t.id === req.params.id || t.slug === req.params.id);
+    if (found) {
+      return res.json(found);
+    }
+    res.status(404).json({ error: "Tenant not found" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/tenants", async (req, res) => {
   try {
     const item = {
