@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const PDFDocument = require("pdfkit");
 const { DynamoDBClient, CreateTableCommand, DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand, QueryCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { S3Client, PutObjectCommand, HeadBucketCommand, CreateBucketCommand } = require("@aws-sdk/client-s3");
 const { RekognitionClient, IndexFacesCommand, SearchFacesByImageCommand, CreateCollectionCommand, DescribeCollectionCommand } = require("@aws-sdk/client-rekognition");
 const OpenAI = require("openai");
@@ -3248,21 +3248,42 @@ app.post("/api/companies/face-verify", async (req, res) => {
     if (matches.length > 0 && matches[0].Face && matches[0].Face.ExternalImageId) {
       const matchedEmpId = matches[0].Face.ExternalImageId;
       if (employeeId && matchedEmpId !== employeeId) {
-        return res.json({
-          success: false,
-          reason: `Facial mismatch: Captured face matches employee "${matchedEmpId}", not the logged-in employee`,
-          matchedEmployeeId: matchedEmpId,
-          similarity: matches[0].Similarity,
-        });
+        // Double-check if employeeId and matchedEmpId refer to the same employee (id vs empCode)
+        let isSameEmployee = false;
+        try {
+          const scanRes = await ddb.send(new ScanCommand({
+            TableName: COMPANY_TABLES.employees,
+            FilterExpression: "tenantId = :tid AND (id = :eid OR empCode = :eid OR code = :eid)",
+            ExpressionAttributeValues: { ":tid": tenantId, ":eid": employeeId }
+          }));
+          if (scanRes.Items && scanRes.Items.length > 0) {
+            const empItem = scanRes.Items[0];
+            if (empItem.id === matchedEmpId || empItem.empCode === matchedEmpId || empItem.code === matchedEmpId) {
+              isSameEmployee = true;
+            }
+          }
+        } catch (_dbLookupErr) {}
+
+        if (!isSameEmployee) {
+          return res.json({
+            success: false,
+            reason: `Facial mismatch: Captured face matches employee "${matchedEmpId}", not the selected employee.`,
+            matchedEmployeeId: matchedEmpId,
+            similarity: matches[0].Similarity,
+          });
+        }
       }
-      res.json({
+      return res.json({
         success: true,
         employeeId: matchedEmpId,
         similarity: matches[0].Similarity,
         url: s3Url,
       });
     } else {
-      res.json({ success: false, reason: "No registered matching face found in Rekognition collection" });
+      return res.json({
+        success: false,
+        reason: "No registered matching face found in AWS Rekognition collection. Please ensure your face is registered in your employee profile.",
+      });
     }
   } catch (error) {
     console.warn("[FaceVerify] Error:", error.name, error.message);
@@ -4701,6 +4722,23 @@ app.get("/api/tenants", async (req, res) => {
   }
 });
 
+app.get("/api/tenants/:id", async (req, res) => {
+  try {
+    const getRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: req.params.id } }));
+    if (getRes.Item) {
+      return res.json(getRes.Item);
+    }
+    const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+    const found = (scanRes.Items || []).find((t) => t.id === req.params.id || t.slug === req.params.id);
+    if (found) {
+      return res.json(found);
+    }
+    res.status(404).json({ error: "Tenant not found" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/tenants", async (req, res) => {
   try {
     const item = {
@@ -4773,6 +4811,36 @@ app.post("/api/companies/login", async (req, res) => {
       return res.json({
         user: { id: "demo-user-1", email: identifier, name: "Workspace Owner" },
         memberships: [{ tenant_id: "demo-tenant-1", role: "owner", tenant: demoTenant }]
+      });
+    }
+
+    // 1b. Check Common Attendance Kiosk login (Demo or default credentials)
+    if (
+      (searchKey === "kiosk@creatonshr.com" || searchKey === "kiosk@demo" || searchKey === "kiosk" || searchKey === "kiosk01" || searchKey === "common@kiosk") &&
+      (password === "kiosk123" || password === "demo123" || password === "password123")
+    ) {
+      const demoTenant = {
+        id: "demo-tenant-1",
+        name: "CreatonsHR Demo Pvt Ltd",
+        slug: "demo",
+        legal_name: "CreatonsHR Demo Private Limited",
+        address: "123 Business Ave, Suite 100, Bangalore, India",
+        gstin: "29ABCDE1234F1Z5",
+        plan: "growth",
+        status: "active",
+        created_at: new Date().toISOString()
+      };
+      return res.json({
+        user: {
+          id: "kiosk-demo-tenant-1",
+          email: identifier,
+          name: "Common Attendance Kiosk",
+          roleId: "role-kiosk",
+          roleName: "Common Attendance Kiosk",
+          isKiosk: true,
+          isEmployeeLogin: true
+        },
+        memberships: [{ tenant_id: "demo-tenant-1", role: "employee", tenant: demoTenant }]
       });
     }
 
@@ -4919,6 +4987,56 @@ app.post("/api/companies/login", async (req, res) => {
         user: { id: `user-${matchedTenant.id}`, email: identifier, name: matchedTenant.name },
         memberships: [{ tenant_id: matchedTenant.id, role: "owner", tenant: tenantInfo }]
       });
+    }
+
+    // 3b. Check DynamoDB company config for custom Common Attendance Portal logins
+    try {
+      const cfgScanRes = await ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.config }));
+      const allConfigs = cfgScanRes.Items || [];
+      const matchedCfg = allConfigs.find(c => {
+        const portalEnabled = c.commonPortalEnabled || c.commonPortal?.enabled;
+        const portalUser = String(c.commonPortalUsername || c.commonPortal?.username || "").toLowerCase().trim();
+        const portalPass = String(c.commonPortalPassword || c.commonPortal?.password || "").trim();
+        return portalEnabled && portalUser && portalUser === searchKey && portalPass === password;
+      });
+
+      if (matchedCfg) {
+        const tenantId = matchedCfg.tenantId || "demo-tenant-1";
+        const empTenant = tenants.find(t => t.id === tenantId);
+        const tenantInfo = empTenant ? {
+          id: empTenant.id,
+          name: empTenant.name,
+          slug: empTenant.slug,
+          legal_name: empTenant.legalName || empTenant.name,
+          address: empTenant.address || null,
+          gstin: empTenant.gstin || null,
+          plan: empTenant.plan,
+          status: empTenant.status,
+          created_at: empTenant.createdAt
+        } : {
+          id: tenantId,
+          name: matchedCfg.name || "CreatonsHR",
+          slug: "company",
+          plan: "growth",
+          status: "active",
+          created_at: new Date().toISOString()
+        };
+
+        return res.json({
+          user: {
+            id: `kiosk-${tenantId}`,
+            email: identifier,
+            name: matchedCfg.commonPortal?.portalTitle || `${tenantInfo.name} Kiosk`,
+            roleId: "role-kiosk",
+            roleName: "Common Attendance Kiosk",
+            isKiosk: true,
+            isEmployeeLogin: true
+          },
+          memberships: [{ tenant_id: tenantId, role: "employee", tenant: tenantInfo }]
+        });
+      }
+    } catch (cfgErr) {
+      console.warn("[Login] Config scan warning:", cfgErr.message);
     }
 
     // 4. Check DynamoDB employees table (employee code / work email login)
@@ -5120,7 +5238,34 @@ app.post("/api/employee/login", async (req, res) => {
     }
 
     const empStatus = String(matched.status || "active").toLowerCase().trim();
-    if (empStatus !== "active") {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const isNoticeExpired = (empStatus === "notice_period" || empStatus === "notice") && matched.lastWorkingDate && todayStr > matched.lastWorkingDate;
+
+    if (isNoticeExpired) {
+      console.warn(`[Login Blocked] Employee ${matched.empCode} (${matched.name}) notice period expired on ${matched.lastWorkingDate}`);
+      try {
+        await ddb.send(new UpdateCommand({
+          TableName: COMPANY_TABLES.employees,
+          Key: { id: matched.id },
+          UpdateExpression: "SET #st = :relieved, statusDate = :lwd, statusNote = :note",
+          ExpressionAttributeNames: { "#st": "status" },
+          ExpressionAttributeValues: {
+            ":relieved": "relieved",
+            ":lwd": matched.lastWorkingDate,
+            ":note": (matched.statusNote ? matched.statusNote + " " : "") + `[Auto-relieved after LWD ${matched.lastWorkingDate}]`
+          }
+        }));
+      } catch (dbErr) {
+        console.warn("[Notice Auto-Relieve] Error auto-updating employee to relieved:", dbErr.message);
+      }
+      return res.status(403).json({
+        error: `Your notice period ended on ${matched.lastWorkingDate}. Your account has been automatically marked as Relieved and access is restricted. Please contact HR.`,
+        accountStatus: "relieved",
+        status: "relieved"
+      });
+    }
+
+    if (empStatus !== "active" && empStatus !== "notice_period" && empStatus !== "notice") {
       const displayStatus = empStatus === "relieved" || empStatus === "releived" ? "Releived" : (matched.status ? (matched.status.charAt(0).toUpperCase() + matched.status.slice(1)) : "Inactive");
       console.warn(`[Login Blocked] Employee ${matched.empCode} (${matched.name}) status is "${displayStatus}"`);
       return res.status(403).json({
@@ -5185,8 +5330,38 @@ app.get("/api/employee/check-status", async (req, res) => {
     }
 
     const rawStatus = String(employee.status || "active").toLowerCase().trim();
-    const isActive = rawStatus === "active";
-    const displayStatus = rawStatus === "relieved" || rawStatus === "releived" ? "Releived" : (rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1));
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const isNoticeExpired = (rawStatus === "notice_period" || rawStatus === "notice") && employee.lastWorkingDate && todayStr > employee.lastWorkingDate;
+
+    if (isNoticeExpired) {
+      try {
+        await ddb.send(new UpdateCommand({
+          TableName: COMPANY_TABLES.employees,
+          Key: { id: employee.id },
+          UpdateExpression: "SET #st = :relieved, statusDate = :lwd, statusNote = :note",
+          ExpressionAttributeNames: { "#st": "status" },
+          ExpressionAttributeValues: {
+            ":relieved": "relieved",
+            ":lwd": employee.lastWorkingDate,
+            ":note": (employee.statusNote ? employee.statusNote + " " : "") + `[Auto-relieved after LWD ${employee.lastWorkingDate}]`
+          }
+        }));
+      } catch (dbErr) {
+        console.warn("[Check-Status Auto-Relieve] DB update error:", dbErr.message);
+      }
+      return res.json({
+        exists: true,
+        active: false,
+        status: "relieved",
+        displayStatus: "Relieved",
+        name: employee.name,
+        empCode: employee.empCode,
+        message: `Your notice period ended on ${employee.lastWorkingDate}. Employment concluded. Access restricted.`
+      });
+    }
+
+    const isActive = rawStatus === "active" || rawStatus === "notice_period" || rawStatus === "notice";
+    const displayStatus = rawStatus === "relieved" || rawStatus === "releived" ? "Releived" : (rawStatus === "notice_period" || rawStatus === "notice") ? "Notice Period" : (rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1));
 
     return res.json({
       exists: true,
