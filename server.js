@@ -1594,15 +1594,18 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
 
       const basicPlusDA = earnedBasic + earnedDA;
       const empPfPct = company.employeePfPct || company.pfRules?.employeePct || 12;
+      const pfCeiling = company.pfRules?.ceiling || 15000;
       let pf = 0;
       if (employee?.pfEligible !== false && basicPlusDA > 0) {
-        if (basicPlusDA >= 15000) {
-          pf = 1800;
+        if (basicPlusDA >= pfCeiling) {
+          pf = Math.round(pfCeiling * (empPfPct / 100));
         } else {
           pf = Math.round(basicPlusDA * (empPfPct / 100));
         }
       }
-      const esi = employee?.esiEligible !== false && fixedGross <= 21000 ? Math.round(gross * 0.0075) : 0;
+      const esiThreshold = company.esiRules?.threshold || company.esiThreshold || 21000;
+      const esiBase = Math.min(basicPlusDA, esiThreshold);
+      const esi = employee?.esiEligible !== false && basicPlusDA <= esiThreshold ? Math.round(esiBase * 0.0075) : 0;
       const pt = employee?.ptEligible !== false ? (gross > 20000 ? 200 : gross > 15000 ? 150 : 0) : 0;
       const tds = employee?.tdsEligible !== false ? Math.round(gross * 0.05) : 0;
 
@@ -3262,7 +3265,7 @@ app.post("/api/companies/face-verify", async (req, res) => {
               isSameEmployee = true;
             }
           }
-        } catch (_dbLookupErr) {}
+        } catch (_dbLookupErr) { }
 
         if (!isSameEmployee) {
           return res.json({
