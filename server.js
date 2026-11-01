@@ -1604,8 +1604,9 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
         }
       }
       const esiThreshold = company.esiRules?.threshold || company.esiThreshold || 21000;
-      const esiBase = Math.min(basicPlusDA, esiThreshold);
-      const esi = employee?.esiEligible !== false && basicPlusDA <= esiThreshold ? Math.round(esiBase * 0.0075) : 0;
+      const empEsiPct = company.employeeEsiPct || company.esiRules?.employeePct || 0.75;
+      const earnedFixedGross = Math.round(fixedGross * prorateFactor);
+      const esi = employee?.esiEligible !== false && fixedGross <= esiThreshold ? Math.round(earnedFixedGross * (empEsiPct / 100)) : 0;
       const pt = employee?.ptEligible !== false ? (gross > 20000 ? 200 : gross > 15000 ? 150 : 0) : 0;
       const tds = employee?.tdsEligible !== false ? Math.round(gross * 0.05) : 0;
 
