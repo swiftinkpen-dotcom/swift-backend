@@ -722,7 +722,7 @@ app.get("/api/companies/initial-state", async (req, res) => {
         if (tenantRes.Item && tenantRes.Item.payrollLockPassword) {
           companyConfig.payrollLockPassword = tenantRes.Item.payrollLockPassword;
         }
-      } catch (tErr) {}
+      } catch (tErr) { }
     }
 
     if (companyConfig && !companyConfig.approvalWorkflows) {
@@ -1594,15 +1594,19 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
 
       const basicPlusDA = earnedBasic + earnedDA;
       const empPfPct = company.employeePfPct || company.pfRules?.employeePct || 12;
+      const pfCeiling = company.pfRules?.ceiling || 15000;
       let pf = 0;
       if (employee?.pfEligible !== false && basicPlusDA > 0) {
-        if (basicPlusDA >= 15000) {
-          pf = 1800;
+        if (basicPlusDA >= pfCeiling) {
+          pf = Math.round(pfCeiling * (empPfPct / 100));
         } else {
           pf = Math.round(basicPlusDA * (empPfPct / 100));
         }
       }
-      const esi = employee?.esiEligible !== false && fixedGross <= 21000 ? Math.round(gross * 0.0075) : 0;
+      const esiThreshold = company.esiRules?.threshold || company.esiThreshold || 21000;
+      const empEsiPct = company.employeeEsiPct || company.esiRules?.employeePct || 0.75;
+      const earnedFixedGross = Math.round(fixedGross * prorateFactor);
+      const esi = employee?.esiEligible !== false && fixedGross <= esiThreshold ? Math.round(earnedFixedGross * (empEsiPct / 100)) : 0;
       const pt = employee?.ptEligible !== false ? (gross > 20000 ? 200 : gross > 15000 ? 150 : 0) : 0;
       const tds = employee?.tdsEligible !== false ? Math.round(gross * 0.05) : 0;
 
@@ -1820,13 +1824,13 @@ app.get("/api/companies/payroll-lock-config", async (req, res) => {
     try {
       const tenantRes = await ddb.send(new GetCommand({ TableName: TABLES.tenants, Key: { id: tenantId } }));
       matchedTenant = tenantRes.Item;
-    } catch (err) {}
+    } catch (err) { }
 
     if (!matchedTenant) {
       try {
         const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
         matchedTenant = (scanRes.Items || []).find(t => t.id === tenantId || t.slug === tenantId);
-      } catch (err) {}
+      } catch (err) { }
     }
 
     let companyConfig = null;
@@ -1836,7 +1840,7 @@ app.get("/api/companies/payroll-lock-config", async (req, res) => {
         Key: { tenantId, id: "config" }
       }));
       companyConfig = cfgRes.Item;
-    } catch (err) {}
+    } catch (err) { }
 
     const rawPassword = (matchedTenant && matchedTenant.payrollLockPassword) || (companyConfig && companyConfig.payrollLockPassword) || "";
     const payrollLockPassword = String(rawPassword || "").trim();
@@ -3262,7 +3266,7 @@ app.post("/api/companies/face-verify", async (req, res) => {
               isSameEmployee = true;
             }
           }
-        } catch (_dbLookupErr) {}
+        } catch (_dbLookupErr) { }
 
         if (!isSameEmployee) {
           return res.json({
@@ -5931,7 +5935,7 @@ function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId 
       continue;
     }
 
-    const empName = emp.name || "Existing Employee";
+    const empName = emp.name || emp.empCode || "Existing Employee";
     const empCode = emp.empCode || "—";
 
     // 1. Employee Code
@@ -5941,10 +5945,12 @@ function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId 
           field: "empCode",
           label: "Employee Code",
           value: candidate.empCode,
-          message: `Employee Code "${candidate.empCode}" already exists in database (assigned to ${empName})`,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
           existingEmployeeName: empName,
           existingEmpCode: empCode,
           existingEmployeeId: emp.id,
+          message: `Employee Code "${candidate.empCode}" already exists in database (assigned to ${empName})`,
         });
       }
     }
@@ -5956,10 +5962,12 @@ function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId 
           field: "email",
           label: "Email Address",
           value: candidate.email,
-          message: `Email "${candidate.email}" already exists in database (assigned to ${empName} - ${empCode})`,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
           existingEmployeeName: empName,
           existingEmpCode: empCode,
           existingEmployeeId: emp.id,
+          message: `Email "${candidate.email}" already exists in database (assigned to ${empName} - ${empCode})`,
         });
       }
     }
@@ -5974,10 +5982,12 @@ function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId 
             field: "phone",
             label: "Phone Number",
             value: candidate.phone,
-            message: `Phone number "${candidate.phone}" already exists in database (assigned to ${empName} - ${empCode})`,
+            conflictingEmployeeName: empName,
+            conflictingEmployeeCode: empCode,
             existingEmployeeName: empName,
             existingEmpCode: empCode,
             existingEmployeeId: emp.id,
+            message: `Phone number "${candidate.phone}" already exists in database (assigned to ${empName} - ${empCode})`,
           });
         }
       }
@@ -5990,10 +6000,12 @@ function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId 
           field: "pan",
           label: "PAN Card",
           value: candidate.pan,
-          message: `PAN Card "${candidate.pan}" already exists in database (assigned to ${empName} - ${empCode})`,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
           existingEmployeeName: empName,
           existingEmpCode: empCode,
           existingEmployeeId: emp.id,
+          message: `PAN Card "${candidate.pan}" already exists in database (assigned to ${empName} - ${empCode})`,
         });
       }
     }
@@ -6005,10 +6017,12 @@ function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId 
           field: "aadhaar",
           label: "Aadhaar Card",
           value: candidate.aadhaar,
-          message: `Aadhaar "${candidate.aadhaar}" already exists in database (assigned to ${empName} - ${empCode})`,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
           existingEmployeeName: empName,
           existingEmpCode: empCode,
           existingEmployeeId: emp.id,
+          message: `Aadhaar "${candidate.aadhaar}" already exists in database (assigned to ${empName} - ${empCode})`,
         });
       }
     }
@@ -6020,10 +6034,12 @@ function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId 
           field: "uan",
           label: "PF UAN Number",
           value: candidate.uan,
-          message: `PF UAN "${candidate.uan}" already exists in database (assigned to ${empName} - ${empCode})`,
+          conflictingEmployeeName: empName,
+          conflictingEmployeeCode: empCode,
           existingEmployeeName: empName,
           existingEmpCode: empCode,
           existingEmployeeId: emp.id,
+          message: `PF UAN "${candidate.uan}" already exists in database (assigned to ${empName} - ${empCode})`,
         });
       }
     }
@@ -6048,13 +6064,15 @@ app.post("/api/employees/check-duplicate", async (req, res) => {
     );
 
     res.json({
+      success: true,
       exists: conflicts.length > 0,
+      hasDuplicate: conflicts.length > 0,
       conflicts,
       message: conflicts.length > 0 ? conflicts[0].message : "No duplicate found",
     });
   } catch (err) {
     console.error("[check-duplicate] Error querying employees:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, hasDuplicate: false, conflicts: [] });
   }
 });
 
@@ -7197,10 +7215,10 @@ app.post("/api/team-chat/send", async (req, res) => {
 
     const resolvedMediaType = mediaType || (
       typeof effectiveText === "string" && (effectiveText.startsWith("🎤 Voice") || effectiveText.startsWith("🎤 ")) ? "audio" :
-      typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
-      typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
-      typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
-      undefined
+        typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
+          typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
+            typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
+              undefined
     );
 
     let resolvedFileSize = fileSize;
@@ -7845,10 +7863,10 @@ async function startServer() {
 
             const resolvedMediaType = mediaType || (
               typeof effectiveText === "string" && (effectiveText.startsWith("🎤 Voice") || effectiveText.startsWith("🎤 ")) ? "audio" :
-              typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
-              typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
-              typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
-              undefined
+                typeof effectiveText === "string" && (effectiveText === "📷 Photo" || effectiveText.startsWith("📷 ")) ? "image" :
+                  typeof effectiveText === "string" && (effectiveText === "🎥 Video" || effectiveText.startsWith("🎥 ")) ? "video" :
+                    typeof effectiveText === "string" && effectiveText.startsWith("📄 ") ? "document" :
+                      undefined
             );
 
             let resolvedFileSize = fileSize;
