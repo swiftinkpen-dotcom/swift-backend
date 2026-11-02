@@ -4,7 +4,7 @@ const cors = require("cors");
 const PDFDocument = require("pdfkit");
 const { DynamoDBClient, CreateTableCommand, DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand, QueryCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
-const { S3Client, PutObjectCommand, HeadBucketCommand, CreateBucketCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, GetObjectCommand, HeadBucketCommand, CreateBucketCommand } = require("@aws-sdk/client-s3");
 const { RekognitionClient, IndexFacesCommand, SearchFacesByImageCommand, CreateCollectionCommand, DescribeCollectionCommand } = require("@aws-sdk/client-rekognition");
 const OpenAI = require("openai");
 const { WebSocketServer } = require("ws");
@@ -4779,6 +4779,28 @@ app.put("/api/tenants/:id", async (req, res) => {
       }
     }
 
+    // Also sync with COMPANY_TABLES.config if company name or legalName is updated
+    if (req.body.name !== undefined || req.body.legalName !== undefined) {
+      try {
+        const tenantId = req.params.id;
+        const cfgRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.config,
+          Key: { tenantId, id: "config" },
+        }));
+        if (cfgRes.Item) {
+          const cfgPatch = {};
+          if (req.body.name !== undefined) cfgPatch.name = String(req.body.name).trim();
+          if (req.body.legalName !== undefined) cfgPatch.legalName = String(req.body.legalName).trim();
+          await ddb.send(new PutCommand({
+            TableName: COMPANY_TABLES.config,
+            Item: { ...cfgRes.Item, ...cfgPatch },
+          }));
+        }
+      } catch (cfgErr) {
+        console.warn("[TenantUpdate] Failed to sync config.name:", cfgErr.message);
+      }
+    }
+
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -5703,6 +5725,183 @@ app.post("/api/employees/bulk-welcome-emails", async (req, res) => {
 
   res.json({ success: true, count: results.length, results });
 });
+
+// Get Company Document Assets Converted to Base64 (for PDF generation and official documents)
+app.get("/api/companies/doc-assets-base64", async (req, res) => {
+  const tenantId = req.query.tenantId || req.headers["x-tenant-id"];
+  if (!tenantId) {
+    return res.status(400).json({ error: "Missing tenantId" });
+  }
+
+  try {
+    const assetScan = await ddb.send(new ScanCommand({
+      TableName: COMPANY_TABLES.docAssets || "swift_company_doc_assets",
+      FilterExpression: "tenantId = :tid",
+      ExpressionAttributeValues: { ":tid": tenantId },
+    }));
+
+    const docAssetItem = assetScan.Items?.[0] || {};
+    const assetKeys = [
+      "letterheadDataUrl",
+      "logoDataUrl",
+      "companySealDataUrl",
+      "authorisedSignatoryDataUrl",
+      "footerDataUrl",
+      "watermarkDataUrl",
+    ];
+
+    const result = { ...docAssetItem };
+
+    await Promise.all(
+      assetKeys.map(async (k) => {
+        const val = docAssetItem[k];
+        if (!val) return;
+        if (typeof val === "string" && val.startsWith("data:")) {
+          result[k] = val;
+          return;
+        }
+        if (typeof val === "string" && val.includes("amazonaws.com/")) {
+          try {
+            const match = val.match(/amazonaws\.com\/(.+)$/);
+            if (match) {
+              const key = decodeURIComponent(match[1]);
+              const s3Res = await s3.send(new GetObjectCommand({
+                Bucket: process.env.S3_BUCKET_NAME || "swift-hrms-uploads",
+                Key: key,
+              }));
+              const bytes = await s3Res.Body.transformToByteArray();
+              const mime = s3Res.ContentType || "image/png";
+              result[k] = `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
+            }
+          } catch (err) {
+            console.warn(`[DocAssetsBase64] Could not fetch ${k} from S3:`, err.message);
+          }
+        }
+      })
+    );
+
+    res.json({ success: true, docAssets: result });
+  } catch (err) {
+    console.error("[DocAssetsBase64] Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Single Appointment Letter Email Route with PDF Attachment
+app.post("/api/employees/send-appointment-letter", async (req, res) => {
+  try {
+    const {
+      tenantId,
+      employeeId,
+      empCode,
+      employeeName,
+      to,
+      subject,
+      companyName,
+      htmlBody,
+      pdfBase64,
+      pdfFileName,
+    } = req.body;
+
+    if (!to || !to.includes("@")) {
+      return res.status(400).json({ success: false, error: "Valid recipient email ('to') is required" });
+    }
+
+    const safeEmpName = employeeName || "Employee";
+    const safeEmpCode = empCode || "N/A";
+    const safeComp = companyName || "SwiftHR Enterprise";
+    const safeSubject = subject || `Official Appointment Letter — ${safeEmpName} (${safeEmpCode})`;
+    const fileName = pdfFileName || `Appointment_Letter_${safeEmpCode.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`;
+
+    const attachments = [];
+    if (pdfBase64) {
+      // Strip potential data URL prefix if sent as "data:application/pdf;base64,..."
+      const cleanBase64 = pdfBase64.includes(";base64,") ? pdfBase64.split(";base64,").pop() : pdfBase64;
+      attachments.push({
+        filename: fileName,
+        content: Buffer.from(cleanBase64, "base64"),
+        contentType: "application/pdf",
+      });
+    }
+
+    const defaultHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 650px; margin: 0 auto; padding: 28px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #059669; margin: 0; font-size: 22px;">Formal Letter of Appointment</h2>
+          <p style="color: #64748b; font-size: 14px; margin-top: 6px;">${safeComp} Workforce Operations</p>
+        </div>
+        <p style="color: #334155; font-size: 15px;">Dear <strong>${safeEmpName}</strong> (ID: <strong>${safeEmpCode}</strong>),</p>
+        <p style="color: #334155; font-size: 15px; line-height: 1.6;">
+          Congratulations on successfully completing <strong>100% of your onboarding process</strong> at <strong>${safeComp}</strong>!
+        </p>
+        <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 18px; margin: 20px 0;">
+          <p style="margin: 0; color: #166534; font-weight: bold; font-size: 14px;">✅ Official Appointment Letter Attached</p>
+          <p style="margin: 8px 0 0 0; color: #15803d; font-size: 13px; line-height: 1.5;">
+            Please find your officially verified Appointment Letter attached to this email as a PDF document for your records. It contains your formal designation, reporting structure, and compensation package.
+          </p>
+        </div>
+        <p style="color: #475569; font-size: 14px; line-height: 1.5;">
+          We are thrilled to have you as a valued member of our team and look forward to an impactful journey together.
+        </p>
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+        <p style="color: #94a3b8; font-size: 12px; text-align: center;">
+          This is an official automated dispatch from ${safeComp} via SwiftHR Systems.
+        </p>
+      </div>
+    `;
+
+    const info = await emailTransporter.sendMail({
+      from: `"${safeComp}" <${process.env.SMTP_USER || "no-reply@swifthr.shop"}>`,
+      to,
+      subject: safeSubject,
+      html: htmlBody || defaultHtml,
+      attachments,
+    });
+
+    console.log(`[AppointmentLetterEmail] Successfully dispatched to ${to} (${safeEmpName}) - MessageId: ${info.messageId}`);
+
+    // If employeeId provided, update DynamoDB record so appointmentLetterSent = true
+    if (employeeId) {
+      try {
+        let empRecord = null;
+        if (tenantId) {
+          try {
+            const getRes = await ddb.send(new GetCommand({ TableName: COMPANY_TABLES.employees, Key: { tenantId, id: String(employeeId) } }));
+            empRecord = getRes.Item;
+          } catch {
+            // fallback to scan
+          }
+        }
+        if (!empRecord && tenantId) {
+          const scanRes = await ddb.send(new ScanCommand({
+            TableName: COMPANY_TABLES.employees,
+            FilterExpression: "tenantId = :tid AND (id = :eid OR empCode = :eid)",
+            ExpressionAttributeValues: { ":tid": tenantId, ":eid": String(employeeId) }
+          }));
+          if (scanRes.Items && scanRes.Items.length > 0) {
+            empRecord = scanRes.Items[0];
+          }
+        }
+
+
+        if (empRecord) {
+          empRecord.appointmentLetterSent = true;
+          empRecord.appointmentLetterSentAt = new Date().toISOString();
+          await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.employees, Item: empRecord }));
+          console.log(`[AppointmentLetterEmail] Updated employee record ${employeeId}: appointmentLetterSent=true`);
+        }
+      } catch (dbErr) {
+        console.warn(`[AppointmentLetterEmail] Could not flag employee in DB:`, dbErr.message);
+      }
+    }
+
+    return res.json({ success: true, messageId: info.messageId });
+  } catch (err) {
+    console.error("[AppointmentLetterEmail] Dispatch failure:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 // Helper for checking employee duplicates
 function findDuplicateEmployeeConflicts(candidate, existingEmployees, excludeId = null) {
