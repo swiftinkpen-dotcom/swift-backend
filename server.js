@@ -3570,6 +3570,13 @@ async function processAndSavePunch({ tenantId, employeeId, timestamp, state, pun
     otHours = hoursWorked > standardHours ? Math.round((hoursWorked - standardHours) * 10) / 10 : 0;
   }
 
+  const isSunday = new Date(dateStr + "T12:00:00Z").getUTCDay() === 0;
+  const isRestDayWork = Boolean(isSunday || existingRec?.isRestDayWork);
+  let restDayWorkStatus = existingRec?.restDayWorkStatus;
+  if (isRestDayWork && !restDayWorkStatus) {
+    restDayWorkStatus = "pending";
+  }
+
   const updatedAttendanceRecord = {
     ...(existingRec || {}),
     id: attId,
@@ -3590,6 +3597,9 @@ async function processAndSavePunch({ tenantId, employeeId, timestamp, state, pun
     punchType: punchType || "FINGERPRINT",
     source: "BIOMETRIC_TERMINAL",
     regularized: Boolean(existingRec?.regularized),
+    isRestDayWork,
+    restDayWorkStatus: isRestDayWork ? restDayWorkStatus : undefined,
+    restDayApprovedHours: existingRec?.restDayApprovedHours ?? (restDayWorkStatus === "approved" ? hoursWorked : 0),
     updatedAt: new Date().toISOString(),
   };
 
@@ -3805,6 +3815,48 @@ app.post(["/iclock/devicecmd", "/devicecmd"], (req, res) => res.set("Content-Typ
 app.get(["/iclock/ping", "/ping"], (req, res) => res.set("Content-Type", "text/plain").send("OK"));
 
 // Direct REST Punch submission endpoint (for LAN Sync Agent `agent.js` / Hardware Bridge)
+// Approve or Reject Sunday / Rest Day Work Attendance
+app.post("/api/attendance/approve-rest-day", async (req, res) => {
+  const { tenantId, attendanceId, action, approvedHours, approvedBy, comment } = req.body;
+  if (!tenantId || !attendanceId || !action) {
+    return res.status(400).json({ error: "Missing required fields: tenantId, attendanceId, action" });
+  }
+
+  try {
+    const getRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.attendance,
+      Key: { tenantId, id: attendanceId }
+    }));
+    const rec = getRes.Item;
+    if (!rec) return res.status(404).json({ error: "Attendance record not found" });
+
+    const isApprove = action === "approve" || action === "Approved";
+    const now = new Date().toISOString();
+    const finalHours = approvedHours !== undefined ? Number(approvedHours) : (rec.hoursWorked || 0);
+
+    const updatedRec = {
+      ...rec,
+      isRestDayWork: true,
+      restDayWorkStatus: isApprove ? "approved" : "rejected",
+      restDayApprovedHours: isApprove ? finalHours : 0,
+      restDayApprovedBy: approvedBy || "Admin",
+      restDayApprovedAt: now,
+      restDayRejectionReason: !isApprove ? (comment || "Declined by Admin") : undefined,
+      updatedAt: now,
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: COMPANY_TABLES.attendance,
+      Item: updatedRec,
+    }));
+
+    res.json({ success: true, record: updatedRec });
+  } catch (err) {
+    console.error("[Rest Day Work Approval Error]:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/attendance/punch", async (req, res) => {
   const { tenantId, employeeId, timestamp, state, punchType, deviceSerial } = req.body;
   if (!tenantId || !employeeId) {

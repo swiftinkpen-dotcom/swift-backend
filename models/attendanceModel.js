@@ -161,6 +161,13 @@ class AttendanceModel {
 
     const nowIso = new Date().toISOString();
 
+    const isSunday = punchDate.getUTCDay() === 0;
+    const isRestDayWork = Boolean(isSunday || dailyItem?.isRestDayWork);
+    let restDayWorkStatus = dailyItem?.restDayWorkStatus;
+    if (isRestDayWork && !restDayWorkStatus) {
+      restDayWorkStatus = "pending";
+    }
+
     if (!dailyItem) {
       dailyItem = {
         id: dailyId,
@@ -174,10 +181,17 @@ class AttendanceModel {
         status: "Present",
         punchCount: 1,
         deviceSerial,
+        isRestDayWork,
+        restDayWorkStatus: isRestDayWork ? restDayWorkStatus : undefined,
+        restDayApprovedHours: 0,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
     } else {
+      dailyItem.isRestDayWork = isRestDayWork;
+      if (isRestDayWork && !dailyItem.restDayWorkStatus) {
+        dailyItem.restDayWorkStatus = "pending";
+      }
       dailyItem.punchCount = (dailyItem.punchCount || 1) + 1;
       dailyItem.lastPunch = punchDate.toISOString();
       dailyItem.updatedAt = nowIso;
