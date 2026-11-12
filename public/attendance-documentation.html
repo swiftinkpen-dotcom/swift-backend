@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CreatonsHR — Attendance Engine Architecture & Ingestion Flow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --slate-900: #0f172a;
+      --slate-800: #1e293b;
+      --slate-700: #334155;
+      --slate-600: #475569;
+      --slate-200: #e2e8f0;
+      --slate-100: #f1f5f9;
+      --slate-50: #f8fafc;
+      --emerald-600: #059669;
+      --emerald-50: #ecfdf5;
+      --amber-600: #d97706;
+      --amber-50: #fffbeb;
+      --rose-600: #e11d48;
+      --rose-50: #fff1f2;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--slate-50);
+      color: var(--slate-800);
+      line-height: 1.65;
+      padding-bottom: 80px;
+    }
+    header.banner {
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: white;
+      padding: 48px 24px;
+      border-bottom: 1px solid var(--slate-700);
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-blue { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .badge-green { background: var(--emerald-50); color: var(--emerald-600); border: 1px solid #a7f3d0; }
+    .badge-amber { background: var(--amber-50); color: var(--amber-600); border: 1px solid #fde68a; }
+    h1 { font-size: 32px; font-weight: 800; margin: 12px 0 8px; letter-spacing: -0.5px; }
+    h2 { font-size: 22px; font-weight: 700; margin: 36px 0 16px; color: var(--slate-900); border-bottom: 2px solid var(--slate-200); padding-bottom: 8px; }
+    h3 { font-size: 17px; font-weight: 700; margin: 24px 0 10px; color: var(--slate-800); }
+    p { margin-bottom: 14px; font-size: 14.5px; color: var(--slate-700); }
+    .subtitle { font-size: 15px; color: #94a3b8; }
+    .card {
+      background: white;
+      border: 1px solid var(--slate-200);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .mermaid-box {
+      background: white;
+      border: 1px solid var(--slate-200);
+      border-radius: 16px;
+      padding: 20px;
+      margin: 20px 0;
+      overflow-x: auto;
+      text-align: center;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 13.5px;
+      background: white;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--slate-200);
+    }
+    th {
+      background: var(--slate-800);
+      color: white;
+      font-weight: 600;
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 12.5px;
+    }
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--slate-200);
+      color: var(--slate-700);
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:nth-child(even) { background: var(--slate-50); }
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      background: var(--slate-100);
+      color: var(--primary-dark);
+      padding: 2px 6px;
+      border-radius: 6px;
+      border: 1px solid var(--slate-200);
+    }
+    pre {
+      background: var(--slate-900);
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 12px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      line-height: 1.6;
+      margin: 14px 0;
+    }
+    .callout {
+      border-left: 4px solid var(--primary);
+      background: var(--slate-100);
+      padding: 14px 18px;
+      border-radius: 0 12px 12px 0;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    .callout-amber {
+      border-left-color: var(--amber-600);
+      background: var(--amber-50);
+      color: #92400e;
+    }
+    .callout-green {
+      border-left-color: var(--emerald-600);
+      background: var(--emerald-50);
+      color: #065f46;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin: 16px 0;
+    }
+    @media (max-width: 768px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="banner">
+    <div class="container">
+      <span class="badge badge-blue">CreatonsHR Enterprise Suite</span>
+      <h1>Attendance Engine Architecture & Ingestion Flow</h1>
+      <p class="subtitle">Complete technical specification, ADMS push protocol, punctuality evaluation, rest day work guard, and cross-module synchronization.</p>
+    </div>
+  </header>
+
+  <main class="container" style="margin-top: 32px;">
+
+    <!-- Section 1: Overview -->
+    <section class="card">
+      <h2>1. Overview & Core Mission</h2>
+      <p>The <strong>CreatonsHR Attendance Engine</strong> (accessible via <code>/admin/attendance</code>) ingests punches from <strong>physical biometric hardware (fingerprint, face, RFID)</strong>, <strong>touchless tablet kiosks</strong>, <strong>mobile GPS geofenced check-ins</strong>, and <strong>administrative regularizations</strong>. It pairs punches into daily check-in / check-out records, computes worked durations, flags punctuality, and syncs seamlessly with payroll.</p>
+      
+      <div class="callout callout-green">
+        <strong>Hardware Push Standard:</strong> Native support for ZKTeco, eSSL, Biomax, and Realtime biometric terminals via the HTTP/HTTPS ADMS protocol (<code>/iclock/cdata</code>), eliminating manual USB thumb drive data exports.
+      </div>
+    </section>
+
+    <!-- Section 2: Pipeline Diagram -->
+    <section class="card">
+      <h2>2. Ingestion Pipeline & Architecture</h2>
+      <p>The multi-modal ingestion pipeline processes raw punch streams from edge hardware to audit-ready attendance records:</p>
+
+      <div class="mermaid-box">
+        <pre class="mermaid">
+flowchart TD
+    subgraph Punch_Sources["Multi-Modal Punch Sources"]
+        BIO["📟 Physical Biometric Devices\n(ZKTeco / eSSL / Biomax)\n• ADMS HTTP Push Protocol\n• Serial Number Handshake"]
+        KIOSK["📱 Face Attendance Kiosk\n(/admin/common-attendance)\n• Front-Desk Tablet Camera\n• Anti-Spoofing Liveness"]
+        MOB["📍 Mobile GPS App\n• Verified Lat / Long\n• Geofence Radius (50m)\n• Office WiFi BSSID"]
+        MAN["✏️ Manual Regularization\n(/admin/attendance Modal)\n• Missed Punch Correction\n• Audit Reason & Notes"]
+    end
+
+    subgraph Backend_Pipeline["CreatonsHR Cloud Ingestion Core"]
+        PARSE["1. ADMS Push & REST Parser\n(/iclock/cdata & /api/attendance/punch)\n• Extract Device SN & Timestamp\n• Sub-second Debounce"]
+        MATCH["2. 3-Tier Employee Identification\n• Tier 1: Device Mapping + SN\n• Tier 2: Biometric PIN / Code\n• Tier 3: Internal Code / UUID"]
+        PAIR["3. First-Punch / Last-Punch Pairing\n• First Punch -> Check-In\n• Latest Punch -> Check-Out\n• Duration & OT Computation"]
+        REST_GUARD["4. Rest Day & Holiday Work Guard\n• Sunday / Holiday Detection\n• Set isRestDayWork = true\n• Set restDayWorkStatus = 'pending'"]
+    end
+
+    subgraph Data_Storage["Amazon DynamoDB Tables"]
+        RAW_LOGS[("swift_company_biometric_logs\n• Immutable Audit Trail\n• Raw ATTLOG Data")]
+        ATT_RECS[("swift_company_attendance\n• att-empId-YYYY-MM-DD\n• inTime, outTime, hoursWorked\n• Punctuality & Rest Day State")]
+    end
+
+    BIO --> PARSE
+    KIOSK --> PARSE
+    MOB --> PARSE
+    MAN --> PARSE
+
+    PARSE --> MATCH
+    MATCH --> PAIR
+    PAIR --> REST_GUARD
+
+    REST_GUARD --> RAW_LOGS
+    REST_GUARD --> ATT_RECS
+        </pre>
+      </div>
+    </section>
+
+    <!-- Section 3: Data Exchange Matrix -->
+    <section class="card">
+      <h2>3. Module Interconnection Matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Connected Module</th>
+            <th>Data Exchanged</th>
+            <th>Operational Impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Biometric Hardware</strong></td>
+            <td>ADMS <code>/iclock/cdata</code> requests, Device Serial Number, raw <code>ATTLOG</code> strings</td>
+            <td>Pushes real-time fingerprint and face punch scans into cloud DynamoDB with sub-second latency.</td>
+          </tr>
+          <tr>
+            <td><strong>Employees Master</strong><br><code>/admin/employees</code></td>
+            <td><code>empCode</code>, <code>biometricPin</code>, <code>biometricMappings</code>, <code>branchId</code></td>
+            <td>Maps hardware PINs (e.g. <code>1001</code>, <code>1006</code>) to employee profiles; validates branch geofence authorization.</td>
+          </tr>
+          <tr>
+            <td><strong>Shift Roster</strong><br><code>/admin/shift-roster</code></td>
+            <td><code>shifts</code> (start, end, grace), <code>rosterWeekOffDays</code></td>
+            <td>Compares punch times against assigned shift; tags On-Time, Grace, Late Arrival, and Half-Day states.</td>
+          </tr>
+          <tr>
+            <td><strong>Leave Calendar</strong><br><code>/admin/leave-calendar</code></td>
+            <td>Public Holidays (<code>holidays[]</code>), regional closures</td>
+            <td>Distinguishes working days from company-declared holidays; triggers Holiday Work flow if punched.</td>
+          </tr>
+          <tr>
+            <td><strong>Requests & Approvals</strong><br><code>/admin/requests</code></td>
+            <td>Approved leaves (CL, SL, EL), short permissions, regularizations</td>
+            <td>Overrides absent marks with "Approved Leave"; applies grace waivers for approved short permissions.</td>
+          </tr>
+          <tr>
+            <td><strong>Payroll Engine</strong><br><code>/admin/payroll</code></td>
+            <td><code>daysPresent</code>, <code>daysHalf</code>, <code>absentDays</code>, <code>otHours</code>, <code>restDayApprovedHours</code></td>
+            <td>Feeds monthly attendance aggregations (<code>computeMonthlyAttendanceSummary</code>); drives Loss of Pay and Overtime wages.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Section 4: Hardware ADMS Sequence -->
+    <section class="card">
+      <h2>4. Hardware Push Protocol Specification (ADMS)</h2>
+      <p>CreatonsHR implements the biometric machine cloud communication standard:</p>
+
+      <div class="mermaid-box">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor Device as Biometric Machine (SN: GED...)
+    participant Backend as CreatonsHR Cloud (/iclock/cdata)
+    participant DDB as DynamoDB Attendance Tables
+    actor Admin as Admin Portal (/admin/attendance)
+
+    Note over Device, Backend: PHASE 1: Device Handshake & Ping
+    Device->>Backend: GET /iclock/cdata?SN=GED7242601405&options=all&pushver=2.4.0
+    Backend-->>Device: HTTP 200 OK (Server Version, TransInterval=15, TransFlag=1111)
+
+    Note over Device, Backend: PHASE 2: Live Punch Ingestion (ATTLOG)
+    Device->>Backend: POST /iclock/cdata?SN=GED7242601405&table=ATTLOG
+    Note right of Device: Body: 1006\t2026-11-11 09:14:12\t0\t1\t0\t0
+    Backend->>Backend: Parse User PIN (1006), Time, Punch State (0=Check-in)
+    Backend->>Backend: 3-Tier Employee Identification (Matched: Uvarani)
+    Backend->>Backend: Check In/Out Pairing & Punctuality Evaluation
+    Backend->>DDB: Save to swift_company_attendance & biometric_logs
+    Backend-->>Device: HTTP 200 OK (OK: 1)
+
+    Note over Admin, DDB: PHASE 3: Real-Time Admin Visibility
+    Admin->>DDB: Fetch Daily Attendance
+    DDB-->>Admin: Show Row: Uvarani | 09:14 AM | On Time / Grace
+        </pre>
+      </div>
+    </section>
+
+    <!-- Section 5: Punctuality Rules & Badges -->
+    <section class="card">
+      <h2>5. Punctuality Evaluation Engine</h2>
+      <p>The punctuality status of each punch is evaluated dynamically against shift schedules:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Status Badge</th>
+            <th>Condition / Evaluation Trigger</th>
+            <th>Payroll Impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong style="color: var(--emerald-600);">On Time</strong></td>
+            <td>Check-In $\le$ Shift Start + Grace Minutes (e.g. $\le$ 09:15 AM for 09:00 AM shift)</td>
+            <td>1.0 Paid Day</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--amber-600);">Grace Window</strong></td>
+            <td>Check-In within allowed grace threshold (e.g. 09:01 AM to 09:15 AM)</td>
+            <td>1.0 Paid Day</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--rose-600);">Late (Xm)</strong></td>
+            <td>Check-In exceeded grace window. Displays exact delay (e.g. <code>Late (24m)</code>)</td>
+            <td>1.0 Paid Day (subject to 3-late-arrival penalty rules)</td>
+          </tr>
+          <tr>
+            <td><strong style="color: #ea580c);">Half Day</strong></td>
+            <td>Worked 4.0h to 6.0h, or checked in past half-day cutoff time</td>
+            <td>0.5 Paid Day</td>
+          </tr>
+          <tr>
+            <td><strong style="color: #dc2626;">Absent</strong></td>
+            <td>Scheduled working day with zero punches recorded</td>
+            <td>0.0 Paid Day (triggers Loss of Pay)</td>
+          </tr>
+          <tr>
+            <td><strong style="color: #2563eb;">Approved Leave</strong></td>
+            <td>Sanctioned leave in Requests module (CL, SL, EL)</td>
+            <td>1.0 Paid Day (deducted from leave bank)</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--amber-600);">Rest Day Work (Pending)</strong></td>
+            <td>Employee punched on Sunday or Holiday; awaiting admin approval</td>
+            <td><strong>Zero credit</strong> until approved</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--emerald-600);">Rest Day Work (Approved)</strong></td>
+            <td>Admin clicked "Approve Sunday Work"</td>
+            <td>Credited to Extra Paid Days & Overtime Pay</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Section 6: Sunday & Public Holiday Guard -->
+    <section class="card">
+      <h2>6. Sunday & Public Holiday Rest Day Work Workflow</h2>
+      <p>Punches recorded on non-working days are automatically isolated in an approval queue to prevent unverified salary inflation:</p>
+
+      <div class="mermaid-box">
+        <pre class="mermaid">
+stateDiagram-v2
+    [*] --> Ingested: Punch logged on Sunday / Public Holiday
+    Ingested --> PendingApproval: Auto-flagged by Attendance Engine
+    note right of PendingApproval: Badge: Yellow\n"Rest Day Work (Pending Approval)"\nor "Holiday Work (Pending Approval)"
+    
+    PendingApproval --> Approved: Admin clicks "Approve Sunday/Holiday Work"
+    note right of Approved: Badge: Green\n"Rest Day Work (Approved · 8h)"\nHours credited to Payroll & Extra Days
+    
+    PendingApproval --> Declined: Admin clicks "Decline Sunday/Holiday Work"
+    note right of Declined: Badge: Gray\n"Rest Day Work (Declined)"\nPunch retained for audit; 0 payroll credit
+    
+    Approved --> PayrollSync: Synced to computeMonthlyAttendanceSummary()
+    Declined --> PayrollIgnored: Excluded from payable days
+        </pre>
+      </div>
+
+      <div class="callout callout-amber">
+        <strong>1-Click Approval Action:</strong> In <code>/admin/attendance</code>, click the <strong>Quick...</strong> dropdown on the employee's row and select <strong>"Approve Sunday Work"</strong>. The badge immediately turns green and the hours are unlocked for month-end payroll.
+      </div>
+    </section>
+
+    <!-- Section 7: Database Schemas -->
+    <section class="card">
+      <h2>7. DynamoDB Table Schemas</h2>
+      <p>Primary Attendance Record committed to <code>swift_company_attendance</code>:</p>
+      <pre>{
+  "id": "att_0eaf9f9e-82b4-4bc1-9ed3-68b1f078e789_2026-11-11",
+  "tenantId": "59a4962f-1ce2-40d6-b7a6-c283702062ae",
+  "employeeId": "0eaf9f9e-82b4-4bc1-9ed3-68b1f078e789",
+  "employeeName": "Uvarani",
+  "empCode": "1006",
+  "department": "Finance",
+  "date": "2026-11-11",
+  "status": "present",
+  "checkIn": "09:14:12",
+  "checkOut": "18:56:30",
+  "hoursWorked": 9.7,
+  "otHours": 1.7,
+  "deviceSerial": "GED7242601405",
+  "isRestDayWork": false,
+  "regularized": false
+}</pre>
+    </section>
+
+  </main>
+
+  <footer style="text-align: center; color: var(--slate-600); font-size: 12.5px; padding: 20px 0;">
+    &copy; 2026 CreatonsHR Cloud Enterprise Suite · Confidential Internal Documentation
+  </footer>
+
+</body>
+</html>
