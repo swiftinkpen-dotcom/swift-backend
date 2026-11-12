@@ -1560,10 +1560,20 @@ app.get("/api/payroll/download-payslip", async (req, res) => {
       deductions = p.computed.deductions || {};
     } else {
       const wd = company.workingDaysPerMonth || 26;
-      const userLogs = attendance.filter((a) => (a.employeeId === employee?.id || a.employeeName === employee?.name) && a.date && a.date.startsWith(monthStr));
-      const presentDays = userLogs.filter((a) => a.status === "present").length;
-      const halfDays = userLogs.filter((a) => a.status === "half-day").length;
-      const leaveDays = userLogs.filter((a) => a.status === "leave").length;
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const userLogs = attendance.filter((a) => (a.employeeId === employee?.id || (employee?.empCode && a.empCode === employee.empCode) || (a.employeeName && employee?.name && a.employeeName.trim().toLowerCase() === employee.name.trim().toLowerCase())) && a.date && a.date.startsWith(monthStr));
+      const isMissedOut = (a) => Boolean(a.isMissedCheckout || (a.clockOut === "22:00" && (a.isAutoClosed || a.autoCloseReason)) || ((a.checkIn || a.clockIn) && !(a.checkOut || a.clockOut) && a.date < todayStr && !a.regularized));
+      const presentDays = userLogs.filter((a) => {
+        const s = (a.status || "").toLowerCase().trim();
+        if (isMissedOut(a)) return false;
+        return s === "present" || s === "late" || s === "on-time" || s === "grace" || s === "within-grace";
+      }).length;
+      const halfDays = userLogs.filter((a) => {
+        const s = (a.status || "").toLowerCase().trim();
+        if (isMissedOut(a)) return s !== "late" && !(Number(a.lateBy) > 0);
+        return s === "half-day" || s === "half_day" || s === "halfday";
+      }).length;
+      const leaveDays = userLogs.filter((a) => (a.status || "").toLowerCase().trim() === "leave" && a.leaveType !== "LOP" && !a.isExcused).length;
       daysWorked = presentDays + halfDays * 0.5 + leaveDays;
       const prorateFactor = wd > 0 ? daysWorked / wd : 1;
 
