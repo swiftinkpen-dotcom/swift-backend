@@ -3613,6 +3613,103 @@ async function processAndSavePunch({ tenantId, employeeId, timestamp, state, pun
     updatedAt: new Date().toISOString(),
   };
 
+  // Evaluate Late Punch Deductions & Restrictions if enabled in company config
+  try {
+    const cfgRes = await ddb.send(new GetCommand({
+      TableName: COMPANY_TABLES.config,
+      Key: { tenantId, id: "config" },
+    }));
+    const compCfg = cfgRes.Item || {};
+    if (compCfg.latePunchControlEnabled && checkIn && !isRestDayWork && updatedAttendanceRecord.status !== "leave") {
+      const shiftStartStr = emp?.shiftStart || compCfg.shifts?.[0]?.start || "09:00";
+      const graceRaw = emp?.graceTime || compCfg.shifts?.[0]?.graceTime || "15";
+      const graceMins = graceRaw === "always" ? 9999 : (parseInt(String(graceRaw), 10) || 0);
+      const [sH, sM] = shiftStartStr.split(":").map(Number);
+      const [pH, pM] = checkIn.split(":").map(Number);
+      const startTotal = (sH || 9) * 60 + (sM || 0);
+      const punchTotal = (pH || 0) * 60 + (pM || 0);
+
+      if (punchTotal > startTotal + graceMins) {
+        const lateMinutes = punchTotal - startTotal;
+        updatedAttendanceRecord.lateBy = lateMinutes;
+        updatedAttendanceRecord.punctuality = "late";
+
+        const ym = dateStr.slice(0, 7);
+        const [attScan, leaveScan] = await Promise.all([
+          ddb.send(new QueryCommand({
+            TableName: COMPANY_TABLES.attendance,
+            KeyConditionExpression: "tenantId = :t",
+            ExpressionAttributeValues: { ":t": tenantId },
+          })),
+          ddb.send(new QueryCommand({
+            TableName: COMPANY_TABLES.leaves,
+            KeyConditionExpression: "tenantId = :t",
+            ExpressionAttributeValues: { ":t": tenantId },
+          })),
+        ]);
+
+        const empMonthAtt = (attScan.Items || [])
+          .filter((a) => (a.employeeId === matchedEmpId || (matchedEmpCode && a.empCode === matchedEmpCode)) && a.date && a.date.startsWith(ym) && a.date < dateStr)
+          .sort((a, b) => a.date.localeCompare(b.date));
+
+        let runningLateDaysCount = 0;
+        let runningLateMinutesTotal = 0;
+        let permAllowance = ((compCfg.permissionTypes || [{ maxHours: 2, paid: true }]).filter((p) => p.paid !== false).reduce((acc, p) => acc + (Number(p.maxHours) || 2) * 60, 0));
+
+        const maxDays = Math.max(0, Number(compCfg.maxLateDaysPerMonth ?? 5));
+        const maxMins = Math.round(Math.max(0, Number(compCfg.maxLateHoursPerMonth ?? 3)) * 60);
+        const mode = compCfg.lateLimitType === "hours" ? "hours" : "days";
+
+        for (const prev of empMonthAtt) {
+          const prevLate = Number(prev.lateBy) || 0;
+          if (prevLate <= 0) continue;
+          const prevTotal = runningLateMinutesTotal;
+          runningLateDaysCount += 1;
+          runningLateMinutesTotal += prevLate;
+          const prevBreached = mode === "days" ? runningLateDaysCount > maxDays : runningLateMinutesTotal > maxMins;
+          if (prevBreached && compCfg.latePermissionDeductionEnabled) {
+            const excess = mode === "days" ? prevLate : (prevTotal < maxMins ? runningLateMinutesTotal - maxMins : prevLate);
+            if (permAllowance >= excess) permAllowance -= excess;
+            else if (!compCfg.lateHalfDayConversionEnabled) permAllowance = 0;
+          }
+        }
+
+        const prevMinutesBeforeToday = runningLateMinutesTotal;
+        runningLateDaysCount += 1;
+        runningLateMinutesTotal += lateMinutes;
+        const isBreached = mode === "days" ? runningLateDaysCount > maxDays : runningLateMinutesTotal > maxMins;
+
+        if (isBreached) {
+          const excessMinutesToDeduct = mode === "days"
+            ? lateMinutes
+            : (prevMinutesBeforeToday < maxMins ? runningLateMinutesTotal - maxMins : lateMinutes);
+
+          if (compCfg.latePermissionDeductionEnabled && permAllowance >= excessMinutesToDeduct) {
+            updatedAttendanceRecord.status = "present";
+            updatedAttendanceRecord.paidDayCredit = 1.0;
+            updatedAttendanceRecord.latePenaltyApplied = "permission_deducted";
+            updatedAttendanceRecord.permissionMinutesDeducted = excessMinutesToDeduct;
+          } else if (compCfg.lateHalfDayConversionEnabled) {
+            updatedAttendanceRecord.status = "half_day";
+            updatedAttendanceRecord.paidDayCredit = 0.5;
+            updatedAttendanceRecord.latePenaltyApplied = "half_day_converted";
+            updatedAttendanceRecord.originalStatus = "late";
+          } else if (compCfg.latePermissionDeductionEnabled) {
+            updatedAttendanceRecord.status = "present";
+            updatedAttendanceRecord.paidDayCredit = 1.0;
+            updatedAttendanceRecord.latePenaltyApplied = permAllowance > 0 ? "permission_deducted" : "uncovered_excess";
+            updatedAttendanceRecord.permissionMinutesDeducted = Math.max(0, permAllowance);
+          }
+        } else {
+          updatedAttendanceRecord.status = "late";
+          updatedAttendanceRecord.paidDayCredit = 1.0;
+        }
+      }
+    }
+  } catch (lateEvalErr) {
+    console.warn("[LatePunch Ingestion] Evaluation warning:", lateEvalErr.message);
+  }
+
   await ddb.send(new PutCommand({
     TableName: COMPANY_TABLES.attendance,
     Item: updatedAttendanceRecord,
@@ -7031,11 +7128,130 @@ async function autoCloseMissedCheckouts() {
 
     lastAutoCloseDate = todayStr;
     console.log(`[Auto-Checkout Cron] Completed. Auto-closed ${updatedCount} record(s), sent ${emailsSent} daily attendance report email(s).`);
-    return { success: true, updatedCount, emailsSent, date: todayStr };
+
+    // Evaluate Consecutive AWOL rules across tenants
+    let awolFlaggedCount = 0;
+    let awolTerminatedCount = 0;
+    try {
+      const awolRes = await evaluateBackendAwol();
+      awolFlaggedCount = awolRes.flaggedCount || 0;
+      awolTerminatedCount = awolRes.terminatedCount || 0;
+    } catch (awolErr) {
+      console.warn("[AWOL Cron] Evaluation warning:", awolErr.message);
+    }
+
+    return { success: true, updatedCount, emailsSent, awolFlaggedCount, awolTerminatedCount, date: todayStr };
   } catch (err) {
     console.error(`[Auto-Checkout Cron] Error processing missed checkouts & emails:`, err);
     return { success: false, error: err.message };
   }
+}
+
+async function evaluateBackendAwol(targetTenantId) {
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const [attScan, empScan, confScan, leaveScan, holScan, rosterScan] = await Promise.all([
+    ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.attendance })),
+    ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.employees })),
+    ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.config })),
+    ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.leaves })),
+    ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.holidays })),
+    ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.roster })),
+  ]);
+
+  const configs = (confScan.Items || []).filter((c) => !targetTenantId || c.tenantId === targetTenantId);
+  const allEmployees = empScan.Items || [];
+  const allAtt = attScan.Items || [];
+  const allLeaves = leaveScan.Items || [];
+  const allHolidays = holScan.Items || [];
+  const allRoster = rosterScan.Items || [];
+
+  let flaggedCount = 0;
+  let terminatedCount = 0;
+
+  for (const conf of configs) {
+    if (!conf.awolControlEnabled || !conf.awolTerminationEnabled) continue;
+    const tid = conf.tenantId;
+    const limit = Math.max(1, Number(conf.awolDaysLimit) || 3);
+    const autoTerminate = Boolean(conf.awolAutoTerminate);
+
+    const tenantEmps = allEmployees.filter((e) => e.tenantId === tid && (!e.status || e.status === "active" || e.status === "notice_period" || e.status === "notice"));
+    const tenantAtt = allAtt.filter((a) => a.tenantId === tid);
+    const tenantLeaves = allLeaves.filter((l) => l.tenantId === tid && l.status === "approved");
+    const tenantHols = new Set(allHolidays.filter((h) => h.tenantId === tid).map((h) => h.date));
+    const tenantRoster = allRoster.filter((r) => r.tenantId === tid);
+
+    for (const emp of tenantEmps) {
+      let consecutiveAwolDays = 0;
+      const awolDates = [];
+      for (let i = 0; i < 45; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+        const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        if (emp.doj && dateStr < emp.doj) break;
+
+        // Skip Holidays & Week Offs
+        if (tenantHols.has(dateStr)) continue;
+        const rosterEntry = tenantRoster.find((r) => (r.employeeId === emp.id || r.employeeName === emp.name) && r.date === dateStr);
+        if (rosterEntry && (rosterEntry.shiftId === "off" || String(rosterEntry.shiftName || "").toLowerCase().includes("off"))) continue;
+        if (!rosterEntry && d.getDay() === 0) continue;
+
+        // Skip Approved Leaves (Paid Leave PL/LV or Informed Leave IL)
+        const hasLeave = tenantLeaves.some((l) => {
+          const matchEmp = l.employeeId === emp.id || (emp.empCode && l.empCode === emp.empCode);
+          const s = l.from || l.startDate || "";
+          const e = l.to || l.endDate || s;
+          return matchEmp && dateStr >= s && dateStr <= e;
+        });
+        if (hasLeave) break;
+
+        const rec = tenantAtt.find((a) => (a.employeeId === emp.id || (emp.empCode && a.empCode === emp.empCode)) && a.date === dateStr);
+        if (!rec) {
+          if (dateStr === todayStr) continue;
+          consecutiveAwolDays++;
+          awolDates.push(dateStr);
+          continue;
+        }
+        const st = String(rec.status || "").toLowerCase().trim();
+        const rem = String(rec.remarks || rec.note || "").toLowerCase();
+        if (st === "leave" || st === "on_leave" || st === "holiday" || st === "week_off" || st === "weekoff" || rem.includes("[informed lop]") || rem.includes("informed leave")) {
+          break;
+        }
+        if (st === "absent") {
+          consecutiveAwolDays++;
+          awolDates.push(dateStr);
+          continue;
+        }
+        break;
+      }
+
+      if (consecutiveAwolDays > limit) {
+        flaggedCount++;
+        const nowIso = new Date().toISOString();
+        const updatedEmp = {
+          ...emp,
+          awolWarningActive: true,
+          consecutiveAwolCount: consecutiveAwolDays,
+          ...(autoTerminate
+            ? {
+                status: "terminated",
+                statusDate: todayStr,
+                lastWorkingDate: awolDates[awolDates.length - 1] || todayStr,
+                terminationReason: "Auto-Terminated due to AWOL",
+                terminatedAt: nowIso,
+                statusNote: `Auto-Terminated due to AWOL (${consecutiveAwolDays} consecutive unauthorized absent days)`,
+                pendingAwolTermination: false,
+              }
+            : {
+                pendingAwolTermination: true,
+              }),
+          updatedAt: nowIso,
+        };
+        await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.employees, Item: updatedEmp }));
+        if (autoTerminate) terminatedCount++;
+      }
+    }
+  }
+  return { success: true, flaggedCount, terminatedCount };
 }
 
 // Background Cron Scheduler (Runs every minute to check for 10:00 PM local time)
@@ -7058,6 +7274,15 @@ function startAutoCheckoutScheduler() {
 app.post("/api/attendance/auto-close-missed-checkouts", async (req, res) => {
   try {
     const result = await autoCloseMissedCheckouts();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/attendance/evaluate-awol", async (req, res) => {
+  try {
+    const result = await evaluateBackendAwol(req.body?.tenantId || req.query?.tenantId);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
