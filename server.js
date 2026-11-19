@@ -1381,6 +1381,46 @@ app.post("/api/requests/act", async (req, res) => {
       }
     }
 
+    // If final approved and category is attendance / regularization: update attendance record in DynamoDB
+    if (updatedItem.status === "Approved" && (updatedItem.category === "attendance" || updatedItem.category === "att-regularization" || updatedItem.workflowId?.includes("missing-punch") || updatedItem.workflowId?.includes("att-"))) {
+      try {
+        const attDate = updatedItem.date || updatedItem.metadata?.date || updatedItem.metadata?.punchDate || now.slice(0, 10);
+        const attId = `att-${updatedItem.employeeId}-${attDate}`;
+        let existingRec = {};
+        try {
+          const existingAtt = await ddb.send(new GetCommand({
+            TableName: COMPANY_TABLES.attendance,
+            Key: { tenantId, id: attId },
+          }));
+          if (existingAtt?.Item) existingRec = existingAtt.Item;
+        } catch (_) {}
+
+        const updatedAttendanceRecord = {
+          ...existingRec,
+          id: attId,
+          tenantId,
+          employeeId: updatedItem.employeeId,
+          employeeName: updatedItem.employeeName || existingRec.employeeName,
+          empCode: updatedItem.empCode || existingRec.empCode,
+          department: updatedItem.department || existingRec.department,
+          date: attDate,
+          status: updatedItem.metadata?.status || updatedItem.metadata?.targetStatus || "present",
+          checkIn: updatedItem.metadata?.checkIn || existingRec.checkIn,
+          checkOut: updatedItem.metadata?.checkOut || existingRec.checkOut,
+          clockIn: updatedItem.metadata?.checkIn || existingRec.clockIn,
+          clockOut: updatedItem.metadata?.checkOut || existingRec.clockOut,
+          regularized: true,
+          regularizedBy: actorName || "Admin",
+          regularizedReason: `Approved Request: ${updatedItem.workflowName || updatedItem.type || "Attendance Regularization"}${comment ? ": " + comment : ""}`,
+          updatedAt: now,
+        };
+        await ddb.send(new PutCommand({ TableName: COMPANY_TABLES.attendance, Item: updatedAttendanceRecord }));
+        console.log(`[Attendance Approved] Updated attendance for ${updatedItem.employeeName} on ${attDate}`);
+      } catch (attErr) {
+        console.warn("[Attendance Auto-Approve Error]:", attErr.message);
+      }
+    }
+
     // If approved or rejected and category is team_group: update group status and broadcast
     if ((updatedItem.category === "team_group" || updatedItem.category === "group") && updatedItem.metadata?.groupId) {
       try {
