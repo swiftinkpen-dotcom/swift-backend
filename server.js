@@ -5143,6 +5143,15 @@ app.post("/api/companies/login", async (req, res) => {
 
     const searchKey = identifier.toLowerCase();
 
+    // Fetch tenants upfront for tenant resolution across admin and kiosk logins
+    let tenants = [];
+    try {
+      const tenantScan = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
+      tenants = tenantScan.Items || [];
+    } catch (_tErr) {
+      console.warn("[Login] Tenants scan warning:", _tErr.message);
+    }
+
     // 1. Check demo tenant admin login
     if ((identifier === "admin@demo" || identifier === "admin@creatonshr.com") && (password === "demo123" || password === "password123")) {
       const demoTenant = {
@@ -5365,8 +5374,6 @@ app.post("/api/companies/login", async (req, res) => {
     }
 
     // 3. Check DynamoDB tenants table (tenant admin login)
-    const scanRes = await ddb.send(new ScanCommand({ TableName: TABLES.tenants }));
-    const tenants = scanRes.Items || [];
     const matchedTenant = tenants.find(t => t.adminEmail && t.adminEmail.toLowerCase() === searchKey && t.adminPassword === password);
 
     if (matchedTenant) {
