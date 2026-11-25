@@ -5,7 +5,7 @@ const PDFDocument = require("pdfkit");
 const { DynamoDBClient, CreateTableCommand, DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand, QueryCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { S3Client, PutObjectCommand, GetObjectCommand, HeadBucketCommand, CreateBucketCommand } = require("@aws-sdk/client-s3");
-const { RekognitionClient, IndexFacesCommand, SearchFacesByImageCommand, CreateCollectionCommand, DescribeCollectionCommand } = require("@aws-sdk/client-rekognition");
+const { RekognitionClient, IndexFacesCommand, SearchFacesByImageCommand, CompareFacesCommand, DeleteFacesCommand, CreateCollectionCommand, DescribeCollectionCommand } = require("@aws-sdk/client-rekognition");
 const OpenAI = require("openai");
 const { WebSocketServer } = require("ws");
 
@@ -3289,56 +3289,179 @@ app.post("/api/companies/face-verify", async (req, res) => {
     const base64Body = photoDataUrl.split(";base64,").pop();
     const buffer = Buffer.from(base64Body, "base64");
 
-    const searchCommand = new SearchFacesByImageCommand({
-      CollectionId: collectionId,
-      Image: { Bytes: buffer },
-      MaxFaces: 1,
-      FaceMatchThreshold: 85,
-    });
+    // Helper to get image buffer from URL or base64
+    const getImageBuffer = async (photoUrl) => {
+      if (!photoUrl) return null;
+      if (photoUrl.startsWith("data:")) {
+        const b64 = photoUrl.split(";base64,").pop();
+        return Buffer.from(b64, "base64");
+      }
+      if (photoUrl.includes("amazonaws.com/")) {
+        const key = photoUrl.split(".amazonaws.com/").pop();
+        if (key) {
+          try {
+            const s3Obj = await s3.send(new GetObjectCommand({
+              Bucket: BUCKET_NAME || "swift-hrms-uploads",
+              Key: decodeURIComponent(key)
+            }));
+            const byteArray = await s3Obj.Body.transformToByteArray();
+            return Buffer.from(byteArray);
+          } catch (_s3Err) {}
+        }
+      }
+      try {
+        const fetchRes = await fetch(photoUrl);
+        if (fetchRes.ok) {
+          const arrBuf = await fetchRes.arrayBuffer();
+          return Buffer.from(arrBuf);
+        }
+      } catch (_fetchErr) {}
+      return null;
+    };
 
-    const matchRes = await rekognition.send(searchCommand);
-    const matches = matchRes.FaceMatches || [];
-
-    if (matches.length > 0 && matches[0].Face && matches[0].Face.ExternalImageId) {
-      const matchedEmpId = matches[0].Face.ExternalImageId;
-      if (employeeId && matchedEmpId !== employeeId) {
-        // Double-check if employeeId and matchedEmpId refer to the same employee (id vs empCode)
-        let isSameEmployee = false;
-        try {
+    // -------------------------------------------------------------
+    // Strategy A: 1-to-1 Verification when target employee is pre-selected
+    // -------------------------------------------------------------
+    if (employeeId) {
+      let targetEmployee = null;
+      try {
+        const getRes = await ddb.send(new GetCommand({
+          TableName: COMPANY_TABLES.employees,
+          Key: { tenantId, id: employeeId }
+        }));
+        if (getRes.Item) {
+          targetEmployee = getRes.Item;
+        } else {
           const scanRes = await ddb.send(new ScanCommand({
             TableName: COMPANY_TABLES.employees,
             FilterExpression: "tenantId = :tid AND (id = :eid OR empCode = :eid OR code = :eid)",
             ExpressionAttributeValues: { ":tid": tenantId, ":eid": employeeId }
           }));
           if (scanRes.Items && scanRes.Items.length > 0) {
-            const empItem = scanRes.Items[0];
-            if (empItem.id === matchedEmpId || empItem.empCode === matchedEmpId || empItem.code === matchedEmpId) {
-              isSameEmployee = true;
+            targetEmployee = scanRes.Items[0];
+          }
+        }
+      } catch (lookupErr) {
+        console.warn("[FaceVerify] Employee lookup warning:", lookupErr.message);
+      }
+
+      // 1. Direct 1-to-1 CompareFaces against enrolled profile photo
+      if (targetEmployee && targetEmployee.photoDataUrl) {
+        try {
+          const profileBuffer = await getImageBuffer(targetEmployee.photoDataUrl);
+          if (profileBuffer) {
+            const compareCommand = new CompareFacesCommand({
+              SourceImage: { Bytes: buffer },
+              TargetImage: { Bytes: profileBuffer },
+              SimilarityThreshold: 70,
+            });
+            const compRes = await rekognition.send(compareCommand);
+            const compMatches = compRes.FaceMatches || [];
+            if (compMatches.length > 0 && compMatches[0].Similarity >= 70) {
+              const matchedSim = compMatches[0].Similarity;
+              console.log(`[FaceVerify] 1-to-1 CompareFaces MATCH: ${targetEmployee.name} (${targetEmployee.id}) at ${matchedSim.toFixed(1)}%`);
+              return res.json({
+                success: true,
+                employeeId: targetEmployee.id,
+                similarity: matchedSim,
+                url: s3Url,
+              });
             }
           }
-        } catch (_dbLookupErr) { }
+        } catch (compErr) {
+          console.warn("[FaceVerify] CompareFaces check warning:", compErr.message);
+        }
+      }
 
-        if (!isSameEmployee) {
+      // 2. Collection search with top 10 matches (FaceMatchThreshold: 70)
+      const searchCommand = new SearchFacesByImageCommand({
+        CollectionId: collectionId,
+        Image: { Bytes: buffer },
+        MaxFaces: 10,
+        FaceMatchThreshold: 70,
+      });
+      const matchRes = await rekognition.send(searchCommand);
+      const matches = matchRes.FaceMatches || [];
+
+      // Check if target employee is among the matches
+      const matchedRecord = matches.find(m => {
+        const ext = m.Face?.ExternalImageId;
+        return ext && (
+          ext === employeeId ||
+          (targetEmployee && (ext === targetEmployee.id || ext === targetEmployee.empCode || ext === targetEmployee.code))
+        );
+      });
+
+      if (matchedRecord) {
+        console.log(`[FaceVerify] Collection match found for ${targetEmployee ? targetEmployee.name : employeeId} at ${matchedRecord.Similarity.toFixed(1)}%`);
+        return res.json({
+          success: true,
+          employeeId: targetEmployee ? targetEmployee.id : employeeId,
+          similarity: matchedRecord.Similarity,
+          url: s3Url,
+        });
+      }
+
+      // If no match for target employee
+      if (matches.length > 0 && matches[0].Face?.ExternalImageId) {
+        return res.json({
+          success: false,
+          reason: `Facial mismatch: Captured face does not match selected employee "${targetEmployee?.name || employeeId}". Please ensure good lighting and look directly into the camera.`,
+          similarity: matches[0].Similarity,
+        });
+      }
+
+      return res.json({
+        success: false,
+        reason: `Biometric verification failed: Captured face did not match ${targetEmployee?.name || 'selected employee'}'s registered profile. Please look directly into the camera.`,
+      });
+    }
+
+    // -------------------------------------------------------------
+    // Strategy B: 1-to-N Walk-up Verification (no employee pre-selected)
+    // -------------------------------------------------------------
+    const searchCommand = new SearchFacesByImageCommand({
+      CollectionId: collectionId,
+      Image: { Bytes: buffer },
+      MaxFaces: 10,
+      FaceMatchThreshold: 70,
+    });
+
+    const matchRes = await rekognition.send(searchCommand);
+    const matches = matchRes.FaceMatches || [];
+
+    if (matches.length > 0) {
+      // Fetch active employees for this tenant
+      let activeEmployees = [];
+      try {
+        const empScan = await ddb.send(new ScanCommand({
+          TableName: COMPANY_TABLES.employees,
+          FilterExpression: "tenantId = :tid",
+          ExpressionAttributeValues: { ":tid": tenantId }
+        }));
+        activeEmployees = empScan.Items || [];
+      } catch (_empErr) {}
+
+      for (const match of matches) {
+        const extId = match.Face?.ExternalImageId;
+        if (!extId) continue;
+        const matchedEmp = activeEmployees.find(e => e.id === extId || e.empCode === extId || e.code === extId);
+        if (matchedEmp) {
+          console.log(`[FaceVerify] 1-to-N Walk-up match: ${matchedEmp.name} (${matchedEmp.id}) at ${match.Similarity.toFixed(1)}%`);
           return res.json({
-            success: false,
-            reason: `Facial mismatch: Captured face matches employee "${matchedEmpId}", not the selected employee.`,
-            matchedEmployeeId: matchedEmpId,
-            similarity: matches[0].Similarity,
+            success: true,
+            employeeId: matchedEmp.id,
+            similarity: match.Similarity,
+            url: s3Url,
           });
         }
       }
-      return res.json({
-        success: true,
-        employeeId: matchedEmpId,
-        similarity: matches[0].Similarity,
-        url: s3Url,
-      });
-    } else {
-      return res.json({
-        success: false,
-        reason: "No registered matching face found in AWS Rekognition collection. Please ensure your face is registered in your employee profile.",
-      });
     }
+
+    return res.json({
+      success: false,
+      reason: "No registered matching face found in active employee directory. Please select your name or contact HR to enroll your biometric profile.",
+    });
   } catch (error) {
     console.warn("[FaceVerify] Error:", error.name, error.message);
     if (
@@ -5039,6 +5162,57 @@ app.post("/api/companies/login", async (req, res) => {
       });
     }
 
+    // 3b. Check DynamoDB company config for custom Common Attendance Portal logins
+    try {
+      const cfgScanRes = await ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.config }));
+      const allConfigs = cfgScanRes.Items || [];
+      const matchedCfg = allConfigs.find(c => {
+        const portalEnabled = c.commonPortalEnabled || c.commonPortal?.enabled;
+        const portalUser = String(c.commonPortalUsername || c.commonPortal?.username || "").toLowerCase().trim();
+        const portalPass = String(c.commonPortalPassword || c.commonPortal?.password || "").trim();
+        return portalEnabled && portalUser && portalUser === searchKey && portalPass === password;
+      });
+
+      if (matchedCfg) {
+        const tenantId = matchedCfg.tenantId || "demo-tenant-1";
+        const empTenant = tenants.find(t => t.id === tenantId);
+        const tenantInfo = empTenant ? {
+          id: empTenant.id,
+          name: empTenant.name,
+          slug: empTenant.slug,
+          legal_name: empTenant.legalName || empTenant.name,
+          address: empTenant.address || null,
+          gstin: empTenant.gstin || null,
+          plan: empTenant.plan,
+          status: empTenant.status,
+          created_at: empTenant.createdAt
+        } : {
+          id: tenantId,
+          name: matchedCfg.name || "CreatonsHR",
+          slug: "company",
+          plan: "growth",
+          status: "active",
+          created_at: new Date().toISOString()
+        };
+
+        return res.json({
+          user: {
+            id: `kiosk-${tenantId}`,
+            email: identifier,
+            name: matchedCfg.commonPortal?.portalTitle || `${tenantInfo.name} Kiosk`,
+            roleId: "role-kiosk",
+            roleName: "Common Attendance Kiosk",
+            isKiosk: true,
+            isEmployeeLogin: true
+          },
+          memberships: [{ tenant_id: tenantId, role: "employee", tenant: tenantInfo }]
+        });
+      }
+    } catch (cfgErr) {
+      console.warn("[Login] Config scan warning:", cfgErr.message);
+    }
+
+
     // 1b. Check Common Attendance Kiosk login (Demo or default credentials)
     if (
       (searchKey === "kiosk@creatonshr.com" || searchKey === "kiosk@demo" || searchKey === "kiosk" || searchKey === "kiosk01" || searchKey === "common@kiosk") &&
@@ -5212,56 +5386,6 @@ app.post("/api/companies/login", async (req, res) => {
         user: { id: `user-${matchedTenant.id}`, email: identifier, name: matchedTenant.name },
         memberships: [{ tenant_id: matchedTenant.id, role: "owner", tenant: tenantInfo }]
       });
-    }
-
-    // 3b. Check DynamoDB company config for custom Common Attendance Portal logins
-    try {
-      const cfgScanRes = await ddb.send(new ScanCommand({ TableName: COMPANY_TABLES.config }));
-      const allConfigs = cfgScanRes.Items || [];
-      const matchedCfg = allConfigs.find(c => {
-        const portalEnabled = c.commonPortalEnabled || c.commonPortal?.enabled;
-        const portalUser = String(c.commonPortalUsername || c.commonPortal?.username || "").toLowerCase().trim();
-        const portalPass = String(c.commonPortalPassword || c.commonPortal?.password || "").trim();
-        return portalEnabled && portalUser && portalUser === searchKey && portalPass === password;
-      });
-
-      if (matchedCfg) {
-        const tenantId = matchedCfg.tenantId || "demo-tenant-1";
-        const empTenant = tenants.find(t => t.id === tenantId);
-        const tenantInfo = empTenant ? {
-          id: empTenant.id,
-          name: empTenant.name,
-          slug: empTenant.slug,
-          legal_name: empTenant.legalName || empTenant.name,
-          address: empTenant.address || null,
-          gstin: empTenant.gstin || null,
-          plan: empTenant.plan,
-          status: empTenant.status,
-          created_at: empTenant.createdAt
-        } : {
-          id: tenantId,
-          name: matchedCfg.name || "CreatonsHR",
-          slug: "company",
-          plan: "growth",
-          status: "active",
-          created_at: new Date().toISOString()
-        };
-
-        return res.json({
-          user: {
-            id: `kiosk-${tenantId}`,
-            email: identifier,
-            name: matchedCfg.commonPortal?.portalTitle || `${tenantInfo.name} Kiosk`,
-            roleId: "role-kiosk",
-            roleName: "Common Attendance Kiosk",
-            isKiosk: true,
-            isEmployeeLogin: true
-          },
-          memberships: [{ tenant_id: tenantId, role: "employee", tenant: tenantInfo }]
-        });
-      }
-    } catch (cfgErr) {
-      console.warn("[Login] Config scan warning:", cfgErr.message);
     }
 
     // 4. Check DynamoDB employees table (employee code / work email login)
